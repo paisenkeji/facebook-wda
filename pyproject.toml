@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]  # 构建依赖
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "facebook-wda-plus"               # 库名（PyPI 唯一）
+version = "0.1.0"              # 版本号（遵循语义化：主.次.修订）
+authors = [
+  { name = "太原湃森科技", email = "typaisenkeji@gmail.com" }
+]
+description = "基于https://github.com/openatx/facebook-wda升级改造的ios自动化库"  # 简短描述
+readme = "README.md"           # 关联 README
+requires-python = ">=3.10"      # 支持的 Python 版本
+classifiers = [                # 分类标签（帮助 PyPI 检索）
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]                 # 项目链接
+Homepage = "https://github.com/paisenkeji/facebook-wda"
+Repository = "https://github.com/paisenkeji/facebook-wda"

@@ -51,7 +51,7 @@ Tested with: <https://github.com/appium/WebDriverAgent/tree/v2.16.1>
 2. Install python wda client
 
 	```
-	pip3 install -U facebook-wda
+	pip install -U facebook-wda-plus
 	```
 
 ## TCP connection over USB (optional)

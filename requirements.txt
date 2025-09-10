@@ -1,0 +1,7 @@
+six
+retry
+Pillow
+setuptools
+cached-property~=1.5.1
+Deprecated~=1.2.6
+construct>=2

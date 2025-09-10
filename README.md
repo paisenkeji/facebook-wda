@@ -316,6 +316,18 @@ s.press("volumeDown")
 # long press home, volumeUp, volumeDown, power, snapshot(power+home)
 s.press_duration("volumeUp", 1) # long press for 1 second
 s.press_duration("snapshot", 0.1)
+
+# 单个手指多点滑动轨迹方法实例
+s.touch_action().add_pointer(
+    pointer_id="finger1",
+    actions=[
+        ("move", 200, 300, 0),    # 移动到起点
+        ("down",),                 # 按下
+        ("pause", 1000),           # 长按1秒
+        ("move", 400, 500, 500),   # 拖动到终点（500ms）
+        ("up",)                    # 抬起
+    ]
+).perform()
 ```
 
 ### Find element

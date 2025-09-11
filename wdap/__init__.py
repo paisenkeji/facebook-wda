@@ -1585,7 +1585,7 @@ class Selector(object):
         if s is None:
             return
         re_element = '|'.join(xcui_element_types.ELEMENTS)
-        return re.sub(r'/(' + re_element + ')', '/XCUIElementType\g<1>', s)
+        return re.sub(r'/(' + re_element + ')', r'/XCUIElementType\g<1>', s)
 
     def _add_escape_character_for_quote_prime_character(self, text):
         """

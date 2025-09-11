@@ -332,6 +332,25 @@ s.touch_action().add_pointer(
         ("up",)                    # 抬起
     ]
 ).perform()
+# 1. 单指从(500,300)滑动到(100,300)（500ms）：
+s.touch_action().add_pointer(
+   pointer_id="finger1",
+   actions=[
+	   ("move", 500, 300, 0),  # 0ms 移动到起点
+	   ("down",),               # 按下
+	   ("move", 100, 300, 500), # 500ms 移动到终点
+	   ("up",)                  # 抬起
+   ]
+).perform()
+
+# 2. 双指缩放（从中心向外扩大）：
+s.touch_action().add_pointer(
+   pointer_id="finger1",
+   actions=[("move", 200, 300, 0), ("down",), ("move", 100, 300, 1000), ("up",)]
+).add_pointer(
+   pointer_id="finger2",
+   actions=[("move", 300, 300, 0), ("down",), ("move", 400, 300, 1000), ("up",)]
+).perform()
 ```
 
 ### Find element

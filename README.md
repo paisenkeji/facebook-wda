@@ -74,26 +74,29 @@ But this size is different with `c.window_size()`
 use `session.scale` to get UIKit scale factor
 
 ## Configuration
-```python
-import wda
 
-wda.DEBUG = False # default False
-wda.HTTP_TIMEOUT = 60.0 # default 60.0 seconds
+```python
+
+import wdap
+
+wdap.DEBUG = False  # default False
+wdap.HTTP_TIMEOUT = 60.0  # default 60.0 seconds
 ```
 
 ## How to use
 ### Create a client
 
 ```py
-import wda
+
+import wdap
 
 # Enable debug will see http Request and Response
-# wda.DEBUG = True
-c = wda.Client('http://localhost:8100')
+# wdap.DEBUG = True
+c = wdap.Client('http://localhost:8100')
 
-# get env from $DEVICE_URL if no arguments pass to wda.Client
+# get env from $DEVICE_URL if no arguments pass to wdap.Client
 # http://localhost:8100 is the default value if $DEVICE_URL is empty
-c = wda.Client()
+c = wdap.Client()
 ```
 
 A `wda.WDAError` will be raised if communite with WDA went wrong.
@@ -107,24 +110,25 @@ class `USBClient` inherit from `Client`
 USBClient connect to wda-server through `unix:/var/run/usbmuxd`
 
 ```python
-import wda
+
+import wdap
 
 # 如果只有一个设备也可以简写为
 # If there is only one iPhone connecttd
-c = wda.USBClient()
+c = wdap.USBClient()
 
 # 支持指定设备的udid，和WDA的端口号
 # Specify udid and WDA port
-c = wda.USBClient("539c5fffb18f2be0bf7f771d68f7c327fb68d2d9", port=8100)
+c = wdap.USBClient("539c5fffb18f2be0bf7f771d68f7c327fb68d2d9", port=8100)
 
 # 也支持通过DEVICE_URL访问
-c = wda.Client("usbmux://{udid}:8100".format(udid="539c5fffb18f2be0bf7f771d68f7c327fb68d2d9"))
+c = wdap.Client("usbmux://{udid}:8100".format(udid="539c5fffb18f2be0bf7f771d68f7c327fb68d2d9"))
 print(c.window_size())
 
 # 注:
 # 仅在安装了tins的电脑上可以使用（目前并不对外开放)
 # 1.2.0 引入 wda_bundle_id 参数
-c = wda.USBClient("539c5fffb18f2be0bf7f771d68f7c327fb68d2d9", port=8100, wda_bundle_id="com.facebook.custom.xctest")
+c = wdap.USBClient("539c5fffb18f2be0bf7f771d68f7c327fb68d2d9", port=8100, wda_bundle_id="com.facebook.custom.xctest")
 ```
 
 看到这里，可以看 [examples](examples) 目录下的一些代码了 
@@ -564,16 +568,16 @@ c.register_callback(wda.Callback.ERROR, device_offline_callback, try_first=True)
 
 
 # the argument name in callback function can be one of
-# - client: wda.Client
+# - client: wdap.Client
 # - url: str, eg: http://localhost:8100/session/024A4577-2105-4E0C-9623-D683CDF9707E/wda/keys
-# - urlpath: str, eg: /wda/keys  (without session id)
+# - urlpath: str, eg: /wdap/keys  (without session id)
 # - with_session: bool # if url contains session id
 # - method: str, eg: GET
 # - response: dict # Callback.HTTP_REQUEST_AFTER only 
 # - err: WDAError # Callback.ERROR only
 #
 def _cb(client: wda.Client, url: str):
-	if url.endswith("/wda/keys"):
+	if url.endswith("/wdap/keys"):
 		print("send_keys called")
 
 c.register_callback(wda.Callback.HTTP_REQUEST_BEFORE, _cb)
@@ -611,23 +615,26 @@ TouchID
 For example
 
 ```python
-import wda
 
-s = wda.Client().session()
+import wdap
+
+s = wdap.Client().session()
+
 
 def _alert_callback(session):
-    session.alert.accept()
+	session.alert.accept()
 
-s.set_alert_callback(_alert_callback) # deprecated，此方法不能用了
+
+s.set_alert_callback(_alert_callback)  # deprecated，此方法不能用了
 
 # do operations, when alert popup, it will auto accept
 s(type="Button").click()
-```	
+```
 
 ## Special property
 ```python
-# s: wda.Session
-s.alibaba.xxx # only used in alibaba-company
+# s: wdap.Session
+s.alibaba.xxx  # only used in alibaba-company
 ```
 
 ## DEVELOP

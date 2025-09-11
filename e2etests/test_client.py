@@ -3,12 +3,10 @@
 
 from __future__ import print_function
 
-import os
-import time
 import pytest
 import xml.etree.ElementTree as ET
 
-import wda
+from src import wda
 from pytest import mark
 
 
@@ -84,7 +82,7 @@ def test_alert():
     Skip: because alert not always happens
     """
     return
-    # c = wda.Client(__target)
+    # c = wdap.Client(__target)
     # with c.session('com.apple.Health') as s:
     #     #print s.alert.text
     #     pass
@@ -93,7 +91,7 @@ def test_alert():
 def test_alert_wait():
     pass
     """ Skip because alert not always happens """
-    # c = wda.Client(__target)
+    # c = wdap.Client(__target)
     # with c.session('com.apple.Preferences') as s:
     #     # start_time = time.time()
     #     assert s.alert.wait(20)
@@ -101,7 +99,7 @@ def test_alert_wait():
 
 
 # def test_scroll():
-#     c = wda.Client()
+#     c = wdap.Client()
 #     with c.session('com.apple.Preferences') as s:
 #         s(class_name='Table').scroll('Developer')
 #         s(text='Developer').tap()

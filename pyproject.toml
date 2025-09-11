@@ -1,22 +1,37 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]  # 构建依赖
+# 构建依赖：指定 setuptools 和 wheel 版本，确保兼容性
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "facebook-wda-plus"               # 库名（PyPI 唯一）
-version = "0.1.0"              # 版本号（遵循语义化：主.次.修订）
+name = "facebook-wda-plus"               # PyPI 唯一库名（已加 "plus" 避免与原库冲突）
+version = "0.1.0"                        # 语义化版本：主版本.次版本.修订号
 authors = [
   { name = "太原湃森科技", email = "typaisenkeji@gmail.com" }
 ]
-description = "基于https://github.com/openatx/facebook-wda升级改造的ios自动化库"  # 简短描述
-readme = "README.md"           # 关联 README
-requires-python = ">=3.10"      # 支持的 Python 版本
-classifiers = [                # 分类标签（帮助 PyPI 检索）
+description = "基于 openatx/facebook-wda 升级改造的 iOS 自动化库，增强触摸动作等功能"  # 简短描述（PyPI 列表页显示）
+readme = "README.md"                     # 关键：仅保留这一行！自动关联长描述和格式，无需额外配置
+requires-python = ">=3.10"               # 支持的 Python 版本
+license = { text = "MIT License" }       # SPDX 格式许可证（替代废弃的分类器）
+classifiers = [                          # 优化分类器，无冗余项
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Operating System :: OS Independent",
+  "Topic :: Software Development :: Testing",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Intended Audience :: Developers",
+]
+dependencies = [
 ]
 
-[project.urls]                 # 项目链接
+[tool.setuptools]
+# 指定需要打包的核心模块（仅打包 "wdap"，排除测试、示例等无关目录）
+packages = ["wdap", "wdap.usbmux"]
+
+[project.urls]
 Homepage = "https://github.com/paisenkeji/facebook-wda"
 Repository = "https://github.com/paisenkeji/facebook-wda"
+Issues = "https://github.com/paisenkeji/facebook-wda/issues"
+Documentation = "https://github.com/paisenkeji/facebook-wda#readme"

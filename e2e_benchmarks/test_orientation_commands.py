@@ -7,9 +7,7 @@ import os
 import time
 import pytest
 import unittest
-from typing import List
-from collections.abc import Iterable
-import wda
+from src import wda
 from .constant import *
 
 curPath = os.path.abspath(os.path.dirname(__file__))

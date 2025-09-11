@@ -6,9 +6,8 @@ WDA API document and example(not offical): https://documenter.getpostman.com/vie
 import os
 import pytest
 import unittest
-from typing import List
 from collections.abc import Iterable
-import wda
+from src import wda
 from .constant import *
 
 curPath = os.path.abspath(os.path.dirname(__file__))
@@ -64,7 +63,7 @@ class TestFindElement(unittest.TestCase):
 
     '''
      Method: GET 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/getVisibleCells
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/getVisibleCells
     
     Return Example:
     ```
@@ -73,11 +72,11 @@ class TestFindElement(unittest.TestCase):
         'sessionId': 'BC8DE836-6F48-4F7B-B540-FCEC97C06068', 'status': 0}
     ```
     '''
-    @pytest.mark.skip('NOT IMPLEMENTED: [GET] {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/getVisibleCells')
+    @pytest.mark.skip('NOT IMPLEMENTED: [GET] {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/getVisibleCells')
     def test_wda_element(self):
         self.app(text='ListView').click()
         ele: wda.Element = self.app(label='LIST_CONTAINER').get(timeout=1)
-        visible_cells_response = ele.http.get(f'/wda/element/{ele.id}/getVisibleCells')
+        visible_cells_response = ele.http.get(f'/wdap/element/{ele.id}/getVisibleCells')
 
 
     '''

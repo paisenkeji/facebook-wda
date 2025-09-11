@@ -2,7 +2,7 @@
 #
 
 import time
-import wda
+from src import wda
 from pytest import mark
 
 @mark.skip("Require English")

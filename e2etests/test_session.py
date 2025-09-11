@@ -3,8 +3,7 @@
 import pytest
 from pytest import mark
 import time
-import wda
-
+from src import wda
 
 
 @mark.skip("no test enviroment")
@@ -13,7 +12,7 @@ def test_session_open_url():
     pass
 
 
-@mark.skip("wda bug")
+@mark.skip("wdap bug")
 def test_session_deactivate():
     with c.session('com.apple.mobilesafari') as s:
         s.deactivate(3.0)
@@ -53,7 +52,7 @@ def test_session_swipe():
     s.swipe_down()
     assert s(name="Airplane Mode").wait_gone(2.0, raise_error=False)
 
-@mark.skip("wda bug")
+@mark.skip("wdap bug")
 def test_session_set_text():
     with c.session('com.apple.mobilesafari') as s:
         s(name='URL', className='Button').set_text("status.github.com")
@@ -67,7 +66,7 @@ def test_session_window_size():
     assert wsize.width == 320
     assert wsize.height == 568
 
-@mark.skip("wda bug")
+@mark.skip("wdap bug")
 def test_session_send_keys():
     with c.session('com.apple.mobilesafari') as s:
         u = s(label='Address', className='Button')

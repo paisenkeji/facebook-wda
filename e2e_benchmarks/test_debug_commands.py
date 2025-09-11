@@ -7,7 +7,7 @@ import os
 import pytest
 import unittest
 import jsonschema
-import wda
+from src import wda
 from lxml import etree
 from .constant import *
 
@@ -40,7 +40,7 @@ class TestDebug(unittest.TestCase):
 
     '''
     Method: GET 
-    Endpoint: {{baseURL}}/wda/accessibleSource
+    Endpoint: {{baseURL}}/wdap/accessibleSource
     '''
     def test_accessible_source(self):
         self.app(text='ListView').click()

@@ -3,7 +3,7 @@
 # 网易云音乐测试示例
 #
 
-import wda
+from src import wda
 from logzero import logger
 
 
@@ -41,7 +41,7 @@ def test_open_safari(c: wda.Client):
 
 def test_send_keys_callback(c: wda.Client):
     def _handle_alert_before_send_keys(client: wda.Client, urlpath: str):
-        if not urlpath.endswith("/wda/keys"):
+        if not urlpath.endswith("/wdap/keys"):
             return
         if client.alert.exists:
             client.alert.accept()

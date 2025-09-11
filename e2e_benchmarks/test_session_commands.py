@@ -8,7 +8,7 @@ import os
 import pytest
 import unittest
 import jsonschema
-import wda
+from src import wda
 from .constant import *
 
 curPath = os.path.abspath(os.path.dirname(__file__))
@@ -47,7 +47,7 @@ class TestSessionCommands(unittest.TestCase):
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/apps/launch
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/apps/launch
     '''
     def test_launch_app(self):
         self.wda_client.app_activate(UNDER_TEST_BUNDLE_ID)
@@ -56,7 +56,7 @@ class TestSessionCommands(unittest.TestCase):
 
     '''
      Method: GET 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/apps/list
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/apps/list
     '''
     def test_app_list(self):
         self.wda_client.session(UNDER_TEST_BUNDLE_ID)
@@ -65,7 +65,7 @@ class TestSessionCommands(unittest.TestCase):
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/apps/state
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/apps/state
     '''
     def test_app_state(self):
         self.wda_client.session(UNDER_TEST_BUNDLE_ID)
@@ -78,7 +78,7 @@ class TestSessionCommands(unittest.TestCase):
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/apps/terminate
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/apps/terminate
     '''
     def test_app_terminate(self):
         self.wda_client.app_terminate(UNDER_TEST_BUNDLE_ID)
@@ -152,7 +152,7 @@ class TestSessionCommands(unittest.TestCase):
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/apps/activate
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/apps/activate
     '''
     def test_app_activate(self):
         self.wda_client.session()
@@ -162,7 +162,7 @@ class TestSessionCommands(unittest.TestCase):
 
     '''
      Method: GET 
-     Endpoint: {{baseURL}}/wda/healthcheck
+     Endpoint: {{baseURL}}/wdap/healthcheck
     '''
     def test_health_check(self):
         health_check = self.wda_client.healthcheck()
@@ -242,9 +242,9 @@ class TestSessionCommands(unittest.TestCase):
 
     '''
      Method: GET
-     Endpoint: {{baseURL}}/wda/shutdown
+     Endpoint: {{baseURL}}/wdap/shutdown
     '''
-    @pytest.mark.skip('NOT IMPLEMENTED: [GET] {{baseURL}}/wda/shutdown')
+    @pytest.mark.skip('NOT IMPLEMENTED: [GET] {{baseURL}}/wdap/shutdown')
     def test_wda_shutdown(self):
         pass
 

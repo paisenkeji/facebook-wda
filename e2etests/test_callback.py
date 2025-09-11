@@ -1,7 +1,7 @@
 # coding: utf-8
 # 
 
-import wda
+from src import wda
 import threading
 
 
@@ -15,7 +15,7 @@ def test_callback(app: wda.Client):
         event.set()
 
     app.register_callback(wda.Callback.HTTP_REQUEST_BEFORE, _cb)
-    # app.register_callback(wda.Callback.HTTP_REQUEST_AFTER, lambda url, response: print(url, response))
+    # app.register_callback(wdap.Callback.HTTP_REQUEST_AFTER, lambda url, response: print(url, response))
     app.status()
     assert event.is_set(), "callback is not called"
 

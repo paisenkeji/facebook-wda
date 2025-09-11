@@ -5,7 +5,7 @@
 
 import os
 import time
-import wda
+from src import wda
 import pytest
 from pytest import mark
 

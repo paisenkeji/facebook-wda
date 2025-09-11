@@ -2,10 +2,8 @@
 
 import pytest
 import threading
-import time
-from unittest.mock import Mock
 
-from wda.utils import limit_call_depth, inject_call, convert, AttrDict
+from src.wda import limit_call_depth, inject_call, convert, AttrDict
 
 
 class TestLimitCallDepth:

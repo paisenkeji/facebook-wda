@@ -5,8 +5,7 @@ WDA API document and example(not offical): https://documenter.getpostman.com/vie
 '''
 import os
 import unittest
-from typing import List
-import wda
+from src import wda
 from .constant import *
 
 curPath = os.path.abspath(os.path.dirname(__file__))

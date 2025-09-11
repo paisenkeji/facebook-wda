@@ -1,7 +1,7 @@
 # coding: utf-8
 #
 
-import wda
+from src import wda
 import pytest
 import os
 
@@ -12,7 +12,7 @@ def c():
         return wda.Client(os.getenv("DEVICE_URL"))
     return wda.USBClient()
 
-    #wda.DEBUG = True
+    #wdap.DEBUG = True
     #__target = os.getenv("DEVICE_URL") or 'http://localhost:8100'
 
 

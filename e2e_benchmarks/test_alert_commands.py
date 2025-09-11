@@ -6,7 +6,7 @@ WDA API document and example(not offical): https://documenter.getpostman.com/vie
 import os
 import pytest
 import unittest
-import wda
+from src import wda
 from .constant import *
 
 curPath = os.path.abspath(os.path.dirname(__file__))
@@ -27,7 +27,7 @@ class TestAlert(unittest.TestCase):
     Method: GET 
     Endpoint: {{baseURL}}/alert/text
     Description: Get the content of the Alert (only the content, not including options), 
-    an exception(wda.exceptions.WDARequestError) will be thrown if no Alert is present.
+    an exception(wdap.exceptions.WDARequestError) will be thrown if no Alert is present.
     '''
 
     def test_alert_text_endpoint_confirmation(self):
@@ -35,7 +35,7 @@ class TestAlert(unittest.TestCase):
         self.assertEqual('Confirmation\nDo you accept?', self.wda_client.alert.text)
     
     def test_alert_text_endpoint_when_no_alert(self):
-        with pytest.raises(wda.exceptions.WDARequestError,  match="status=110, value={'error': \'no such alert', "\
+        with pytest.raises(src.wda.exceptions.WDARequestError, match="status=110, value={'error': \'no such alert', "\
                            "'message': 'An attempt was made to operate on a modal dialog when one was not open'}"):
             self.wda_client.alert.text
 
@@ -45,14 +45,14 @@ class TestAlert(unittest.TestCase):
     Endpoint: {{baseURL}}/session/{{sessionId}}/alert/text
     '''
     def test_alert_text_input(self):
-        with pytest.raises(wda.exceptions.WDARequestError,  match="status=110, value={'error': \'no such alert', "\
+        with pytest.raises(src.wda.exceptions.WDARequestError, match="status=110, value={'error': \'no such alert', "\
                            "'message': 'An attempt was made to operate on a modal dialog when one was not open'}"):
             self.wda_client.alert.set_text('hello world')
 
 
     '''1
     Method: GET 
-    Endpoint: {{baseURL}}/session/{{sessionId}}/wda/alert/buttons
+    Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/alert/buttons
     Description: Get buttons for all prompt alert buttons.
     '''
     def test_alert_text_button_endpoint_value(self):
@@ -71,7 +71,7 @@ class TestAlert(unittest.TestCase):
         self.wda_client.alert.dismiss()
         try:
             self.app(text='Reject').get(timeout=1)
-        except wda.exceptions.WDAElementNotFoundError:
+        except src.wda.exceptions.WDAElementNotFoundError:
             return
         raise AssertionError('Alert not dismissed')
 
@@ -86,6 +86,6 @@ class TestAlert(unittest.TestCase):
         self.app.alert.accept()
         try:
             self.app(text='Accept').get(timeout=1)
-        except wda.exceptions.WDAElementNotFoundError:
+        except src.wda.exceptions.WDAElementNotFoundError:
             return
         raise AssertionError('Alert not dismissed')

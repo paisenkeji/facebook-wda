@@ -17,7 +17,7 @@ class MuxConnectError(MuxError, ConnectionError):
 
 
 class WDAError(Exception):
-    """ base wda error """
+    """ base wdap error """
 
 
 class WDABadGateway(WDAError):

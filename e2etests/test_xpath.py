@@ -1,7 +1,7 @@
 # coding: utf-8
 #
 
-import wda
+from src import wda
 
 
 def test_xpath(app: wda.Client):

@@ -6,7 +6,7 @@ WDA API document and example(not offical): https://documenter.getpostman.com/vie
 import os
 import pytest
 import unittest
-import wda
+from src import wda
 from .constant import *
 
 curPath = os.path.abspath(os.path.dirname(__file__))
@@ -172,7 +172,7 @@ class TestElement(unittest.TestCase):
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/accessible
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/accessible
     '''
     def test_ele_accessible_is_false(self):
         self.assertFalse(self.app(text='HIDDEN_BTN').accessible)
@@ -183,7 +183,7 @@ class TestElement(unittest.TestCase):
 
     '''
     Method: POST 
-    Endpoint: {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/accessibilityContainer
+    Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/accessibilityContainer
     NOTE Swift accessibility Container is not useful, always return false.
     
     Example:
@@ -219,7 +219,7 @@ class TestElement(unittest.TestCase):
 
     '''
     Method: POST 
-    Endpoint: {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/swipe
+    Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/swipe
     '''
     @pytest.mark.skip('NOT IMPLEMENTED')
     def test_ele_swipe_top(self):
@@ -229,21 +229,21 @@ class TestElement(unittest.TestCase):
 
     '''
     Method: POST 
-    Endpoint: {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/pinch
+    Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/pinch
     '''
-    @pytest.mark.skip('NOT IMPLEMENTED: [POST] {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/pinch')
+    @pytest.mark.skip('NOT IMPLEMENTED: [POST] {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/pinch')
     def test_pinch(self):
         ...
 
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/touchAndHold
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/touchAndHold
     '''
     def test_touch_and_hold(self):
         try:
             self.app(text='OK').get(timeout=1)
-        except wda.exceptions.WDAElementNotFoundError:
+        except src.wda.exceptions.WDAElementNotFoundError:
             pass
         self.app(text='LONG_TAP_ALERT').tap_hold(duration=2)
         self.assertTrue(self.app(text='LONG_TAP_ALERT_OK').get(timeout=1).displayed) 
@@ -251,23 +251,23 @@ class TestElement(unittest.TestCase):
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/dragfromtoforduration
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/dragfromtoforduration
     '''
-    @pytest.mark.skip('NOT IMPLEMENTED: [POST] {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/dragfromtoforduration')
+    @pytest.mark.skip('NOT IMPLEMENTED: [POST] {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/dragfromtoforduration')
     def test_drag_from_to_for_duration(self):
       pass
 
 
     '''
     Method: POST 
-    Endpoint: {{baseURL}}/session/{{sessionId}}/wda/dragfromtoforduration
+    Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/dragfromtoforduration
     '''
     def test_app_drag_from_to_for_duration(self):
         self.app(text='ListView').click()
         self.assertTrue(self.app(text='Row1').get(timeout=1).displayed) 
         try:
             self.app(text='Row30').get(timeout=1)
-        except wda.exceptions.WDAElementNotFoundError:
+        except src.wda.exceptions.WDAElementNotFoundError:
             pass
         self.app.swipe(500, 800, 500, 200, duration=0.5)
         self.assertTrue(self.app(text='Row30').get(timeout=1).displayed) 
@@ -275,16 +275,16 @@ class TestElement(unittest.TestCase):
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/pickerwheel/{{uuid}}/select
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/pickerwheel/{{uuid}}/select
     '''
-    @pytest.mark.skip('NOT IMPLEMENTED: [POST] {{baseURL}}/session/{{sessionId}}/wda/pickerwheel/{{uuid}}/select')
+    @pytest.mark.skip('NOT IMPLEMENTED: [POST] {{baseURL}}/session/{{sessionId}}/wdap/pickerwheel/{{uuid}}/select')
     def test_ele_select(self):
         pass
 
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/keys
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/keys
     '''
     def test_wda_keys(self):
         self.app(text='INPUT_FIELD').click()
@@ -294,16 +294,16 @@ class TestElement(unittest.TestCase):
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/forceTouch
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/forceTouch
     '''
-    @pytest.mark.skip('NOT IMPLEMENTED: [POST] {{baseURL}}/session/{{sessionId}}/wda/element/{{uuid}}/forceTouch')
+    @pytest.mark.skip('NOT IMPLEMENTED: [POST] {{baseURL}}/session/{{sessionId}}/wdap/element/{{uuid}}/forceTouch')
     def test_ele_force_touch(self):
         pass
 
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/doubleTap
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/doubleTap
     '''
     def test_ele_touble_tap(self):
         bounds = self.app(text='DOUBLE_TAP_ALERT').bounds
@@ -315,7 +315,7 @@ class TestElement(unittest.TestCase):
 
     '''
      Method: POST 
-     Endpoint: {{baseURL}}/session/{{sessionId}}/wda/touchAndHold
+     Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/touchAndHold
     '''
     def test_wda_touch_and_hold(self):
         bounds = self.app(text='LONG_TAP_ALERT').bounds

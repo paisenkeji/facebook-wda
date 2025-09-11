@@ -7,7 +7,7 @@ import os
 import pytest
 import unittest
 import jsonschema
-import wda
+from src import wda
 from .constant import *
 
 curPath = os.path.abspath(os.path.dirname(__file__))
@@ -25,7 +25,7 @@ class TestDevice(unittest.TestCase):
 
     '''
     Method: POST
-    Endpoint: {{baseURL}}/session/{{sessionId}}/wda/deactivateApp
+    Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/deactivateApp
     Description: Put app into background and than put it back.
     '''
     def test_deactivate_app(self):
@@ -34,7 +34,7 @@ class TestDevice(unittest.TestCase):
 
     '''
     Method: POST
-    Endpoint: {{baseURL}}/session/{{sessionId}}/wda/keyboard/dismiss
+    Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/keyboard/dismiss
     Description: Put the keyboard into the background.
     '''
     def test_keybord_dismiss(self):
@@ -44,8 +44,8 @@ class TestDevice(unittest.TestCase):
     
     '''
     Method: POST
-    Endpoint: {{baseURL}}/wda/lock
-    Endpoint: {{baseURL}}/wda/unlock
+    Endpoint: {{baseURL}}/wdap/lock
+    Endpoint: {{baseURL}}/wdap/unlock
     Description: Lock the device.
     '''
     def test_keybord_lock_and_unlock(self):
@@ -55,12 +55,12 @@ class TestDevice(unittest.TestCase):
 
     '''
     Method: GET
-    Endpoint: {{baseURL}}/session/{{sessionId}}/wda/screen
+    Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/screen
     Description: UIKit scale factor
     Refs:
         https://developer.apple.com/library/archive/documentation/DeviceInformation/Reference/iOSDeviceCompatibility/Displays/Displays.html
     There is another way to get scale
-        self._session_http.get("/wda/screen").value returns {"statusBarSize": {'width': 320, 'height': 20}, 'scale': 2}
+        self._session_http.get("/wdap/screen").value returns {"statusBarSize": {'width': 320, 'height': 20}, 'scale': 2}
     '''
     def test_scale(self):
         self.assertIsInstance(self.app.scale, int)
@@ -68,7 +68,7 @@ class TestDevice(unittest.TestCase):
     
     '''
     Method: GET
-    Endpoint: {{baseURL}}/wda/activeAppInfo
+    Endpoint: {{baseURL}}/wdap/activeAppInfo
     Description: Return bundleId pid and etc. like:
     {'processArguments': {'env': {}, 'args': []}, 'name': '', 'pid': 19052, 'bundleId': 'com.test.cert.TestCert'}
     '''
@@ -84,7 +84,7 @@ class TestDevice(unittest.TestCase):
 
     '''
     Method: POST
-    Endpoint: {{baseURL}}/session/{{sessionId}}/wda/setPasteboard
+    Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/setPasteboard
     Description: Set paste board  board.
     '''
     def test_set_paste_board(self):
@@ -92,13 +92,13 @@ class TestDevice(unittest.TestCase):
 
     '''
     Method: POST
-    Endpoint: {{baseURL}}/session/{{sessionId}}/wda/getPasteboard
+    Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/getPasteboard
     #NOTE: IS NOT USED. RETURN NULL.
     e.g:
     curl http://127.0.0.1:8100/session/3D28C745-5290-4787-948C-43C7A27E6146/wda/getPasteboard -X POST -v
     *   Trying 127.0.0.1:8100...
     * Connected to 127.0.0.1 (127.0.0.1) port 8100 (#0)
-    > POST /session/3D28C745-5290-4787-948C-43C7A27E6146/wda/getPasteboard HTTP/1.1
+    > POST /session/3D28C745-5290-4787-948C-43C7A27E6146/wdap/getPasteboard HTTP/1.1
     > Host: 127.0.0.1:8100
     > User-Agent: curl/7.86.0
     > Accept: */*
@@ -115,7 +115,7 @@ class TestDevice(unittest.TestCase):
     < 
     * Closing connection 0
     '''
-    @pytest.mark.skip('WDA API NOT USEFUL: {{baseURL}}/session/{{sessionId}}/wda/getPasteboard')
+    @pytest.mark.skip('WDA API NOT USEFUL: {{baseURL}}/session/{{sessionId}}/wdap/getPasteboard')
     def test_get_paste_board(self):
         '''Wait to PR merge: https://github.com/openatx/facebook-wda/pull/133/files'''
         ...
@@ -123,7 +123,7 @@ class TestDevice(unittest.TestCase):
 
     '''
     Method: GET
-    Endpoint: {{baseURL}}/wda/device/info
+    Endpoint: {{baseURL}}/wdap/device/info
     Description: Return device info.
     Example Return:
     {"timeZone": "GMT+0800", "currentLocale": "zh_CN", "model": "iPhone", "uuid": 
@@ -143,13 +143,12 @@ class TestDevice(unittest.TestCase):
 
     '''
     Method: GET
-    Endpoint: {{baseURL}}/session/{{sessionId}}/wda/batteryInfo
+    Endpoint: {{baseURL}}/session/{{sessionId}}/wdap/batteryInfo
     Description: Return device battery info.
     Example Return:
     {"level": 0.5799999833106995, "state": 2}
     '''
     def test_battery_info(self):
-        import json
         except_json_schema = {"$schema":"http://json-schema.org/draft-07/schema#","type":"object",
                               "properties":{"level":{"type":"number"},"state":{"type":"integer"}},
                               "additionalProperties":False,"required":["level","state"]}
@@ -158,7 +157,7 @@ class TestDevice(unittest.TestCase):
 
     '''
     Method: GET
-    Endpoint: {{baseURL}}/wda/homescreen
+    Endpoint: {{baseURL}}/wdap/homescreen
     Description: back to home screen
     '''
     def test_homescreen(self):
@@ -169,7 +168,7 @@ class TestDevice(unittest.TestCase):
 
     '''
     Method: GET
-    Endpoint: {{baseURL}}/wda/locked
+    Endpoint: {{baseURL}}/wdap/locked
     Description: check device is locked or not.
     '''
     def test_locked(self):

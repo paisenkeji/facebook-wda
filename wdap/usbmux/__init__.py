@@ -8,8 +8,8 @@ import json
 from http.client import HTTPConnection, HTTPSConnection, HTTPResponse
 from urllib.parse import urlparse
 
-from wda.usbmux.exceptions import HTTPError, MuxConnectError, MuxError
-from wda.usbmux.pyusbmux import select_device
+from src.wda.usbmux.exceptions import HTTPError, MuxConnectError, MuxError
+from src.wda.usbmux.pyusbmux import select_device
 
 _DEFAULT_CHUNK_SIZE = 4096
 

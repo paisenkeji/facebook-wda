@@ -417,7 +417,7 @@ class BaseClient(object):
     def home(self):
         """Press home button"""
         try:
-            self.http.post('/wdap/homescreen')
+            self.http.post('/wda/homescreen')
         except WDARequestError as e:
             if "Timeout waiting until SpringBoard is visible" in str(e):
                 return
@@ -425,18 +425,18 @@ class BaseClient(object):
 
     def healthcheck(self):
         """Hit healthcheck"""
-        return self.http.get('/wdap/healthcheck')
+        return self.http.get('/wda/healthcheck')
 
     def locked(self) -> bool:
         """ returns locked status, true or false """
-        return self.http.get("/wdap/locked").value
+        return self.http.get("/wda/locked").value
 
     def lock(self):
-        return self.http.post('/wdap/lock')
+        return self.http.post('/wda/lock')
 
     def unlock(self):
         """ unlock screen, double press home """
-        return self.http.post('/wdap/unlock')
+        return self.http.post('/wda/unlock')
 
     def sleep(self, secs: float):
         """ same as time.sleep """
@@ -451,7 +451,7 @@ class BaseClient(object):
              "name": "",
              "bundleId": "com.netease.cloudmusic"}
         """
-        return self.http.get("/wdap/activeAppInfo").value
+        return self.http.get("/wda/activeAppInfo").value
 
     def source(self, format='xml', accessible=False):
         """
@@ -460,7 +460,7 @@ class BaseClient(object):
             accessible (bool): when set to true, format is always 'json'
         """
         if accessible:
-            return self.http.get('/wdap/accessibleSource').value
+            return self.http.get('/wda/accessibleSource').value
         return self.http.get('source?format=' + format).value
 
     def screenshot(self, png_filename=None, format='pillow'):
@@ -579,7 +579,7 @@ class BaseClient(object):
             res = self.http.post('session', payload)
         except WDAEmptyResponseError:
             """ when there is alert, might be got empty response
-            use /wdap/apps/state may still get sessionId
+            use /wda/apps/state may still get sessionId
             """
             res = self.session().app_state(bundle_id)
             if res.value != 4:
@@ -646,10 +646,10 @@ class BaseClient(object):
         Refs:
             https://developer.apple.com/library/archive/documentation/DeviceInformation/Reference/iOSDeviceCompatibility/Displays/Displays.html
         There is another way to get scale
-            self._session_http.get("/wdap/screen").value returns {"statusBarSize": {'width': 320, 'height': 20}, 'scale': 2}
+            self._session_http.get("/wda/screen").value returns {"statusBarSize": {'width': 320, 'height': 20}, 'scale': 2}
         """
         try:
-            return self._session_http.get("/wdap/screen").value['scale']
+            return self._session_http.get("/wda/screen").value['scale']
         except (KeyError, WDARequestError):
             v = max(self.screenshot().size) / max(self.window_size())
             return round(v)
@@ -672,14 +672,14 @@ class BaseClient(object):
         Returns dict: (I do not known what it means)
             eg: {"level": 1, "state": 2}
         """
-        return self._session_http.get("/wdap/batteryInfo").value
+        return self._session_http.get("/wda/batteryInfo").value
 
     def device_info(self):
         """
         Returns dict:
             eg: {'currentLocale': 'zh_CN', 'timeZone': 'Asia/Shanghai'}
         """
-        return self._session_http.get("/wdap/device/info").value
+        return self._session_http.get("/wda/device/info").value
 
     @property
     def info(self):
@@ -699,7 +699,7 @@ class BaseClient(object):
     def set_clipboard(self, content, content_type="plaintext"):
         """ set clipboard """
         self._session_http.post(
-            "/wdap/setPasteboard", {
+            "/wda/setPasteboard", {
                 "content": base64.b64encode(content.encode()).decode(),
                 "contentType": content_type
             })
@@ -735,14 +735,14 @@ class BaseClient(object):
             self.app_launch(wda_bundle_id)
         except:
             pass
-        clipboard_text = self._session_http.post("/wdap/getPasteboard").value
+        clipboard_text = self._session_http.post("/wda/getPasteboard").value
         # Switch back to the screen before.
         self.app_launch(current_app_bundle_id)
         return base64.b64decode(clipboard_text).decode('utf-8')
     
     # Not working
     # def siri_activate(self, text):
-    #    self.http.post("/wdap/siri/activate", {"text": text})
+    #    self.http.post("/wda/siri/activate", {"text": text})
 
     def app_launch(self,
                    bundle_id,
@@ -765,7 +765,7 @@ class BaseClient(object):
             self.unlock()
 
         return self._session_http.post(
-            "/wdap/apps/launch", {
+            "/wda/apps/launch", {
                 "bundleId": bundle_id,
                 "arguments": arguments,
                 "environment": environment,
@@ -773,13 +773,13 @@ class BaseClient(object):
             })
 
     def app_activate(self, bundle_id):
-        return self._session_http.post("/wdap/apps/launch", {
+        return self._session_http.post("/wda/apps/launch", {
             "bundleId": bundle_id,
         })
 
     def app_terminate(self, bundle_id):
         # Deprecated, use app_stop instead
-        return self._session_http.post("/wdap/apps/terminate", {
+        return self._session_http.post("/wda/apps/terminate", {
             "bundleId": bundle_id,
         })
 
@@ -793,7 +793,7 @@ class BaseClient(object):
 
         value 1(not running) 2(running in background) 3(running in foreground)
         """
-        return self._session_http.post("/wdap/apps/state", {
+        return self._session_http.post("/wda/apps/state", {
             "bundleId": bundle_id,
         })
 
@@ -820,7 +820,7 @@ class BaseClient(object):
         Return example:
             [{'pid': 52, 'bundleId': 'com.apple.springboard'}]
         """
-        return self._session_http.get("/wdap/apps/list").value
+        return self._session_http.get("/wda/apps/list").value
 
     def open_url(self, url):
         """
@@ -841,16 +841,16 @@ class BaseClient(object):
         Args:
             - duration (float): deactivate time, seconds
         """
-        return self._session_http.post('/wdap/deactivateApp',
+        return self._session_http.post('/wda/deactivateApp',
                                        dict(duration=duration))
 
     def tap(self, x, y):
         # Support WDA `BREAKING CHANGES`
         # More see: https://github.com/appium/WebDriverAgent/blob/master/CHANGELOG.md#600-2024-01-31
         try:
-            return self._session_http.post('/wdap/tap', dict(x=x, y=y))
+            return self._session_http.post('/wda/tap', dict(x=x, y=y))
         except:
-            return self._session_http.post('/wdap/tap/0', dict(x=x, y=y))
+            return self._session_http.post('/wda/tap/0', dict(x=x, y=y))
 
     def _percent2pos(self, x, y, window_size=None):
         if any(isinstance(v, float) for v in [x, y]):
@@ -876,7 +876,7 @@ class BaseClient(object):
 
     def double_tap(self, x, y):
         x, y = self._percent2pos(x, y)
-        return self._session_http.post('/wdap/doubleTap', dict(x=x, y=y))
+        return self._session_http.post('/wda/doubleTap', dict(x=x, y=y))
 
     def tap_hold(self, x, y, duration=1.0):
         """
@@ -886,11 +886,11 @@ class BaseClient(object):
             - x, y(int, float): float(percent) or int(absolute coordicate)
             - duration(float): seconds of hold time
 
-        [[FBRoute POST:@"/wdap/touchAndHold"] respondWithTarget:self action:@selector(handleTouchAndHoldCoordinate:)],
+        [[FBRoute POST:@"/wda/touchAndHold"] respondWithTarget:self action:@selector(handleTouchAndHoldCoordinate:)],
         """
         x, y = self._percent2pos(x, y)
         data = {'x': x, 'y': y, 'duration': duration}
-        return self._session_http.post('/wdap/touchAndHold', data=data)
+        return self._session_http.post('/wda/touchAndHold', data=data)
 
     def swipe(self, x1, y1, x2, y2, duration=0):
         """
@@ -898,7 +898,7 @@ class BaseClient(object):
             x1, y1, x2, y2 (int, float): float(percent), int(coordicate)
             duration (float): start coordinate press duration (seconds)
 
-        [[FBRoute POST:@"/wdap/dragfromtoforduration"] respondWithTarget:self action:@selector(handleDragCoordinate:)],
+        [[FBRoute POST:@"/wda/dragfromtoforduration"] respondWithTarget:self action:@selector(handleDragCoordinate:)],
         """
         if any(isinstance(v, float) for v in [x1, y1, x2, y2]):
             size = self.window_size()
@@ -906,14 +906,14 @@ class BaseClient(object):
             x2, y2 = self._percent2pos(x2, y2, size)
 
         data = dict(fromX=x1, fromY=y1, toX=x2, toY=y2, duration=duration)
-        return self._session_http.post('/wdap/dragfromtoforduration', data=data)
+        return self._session_http.post('/wda/dragfromtoforduration', data=data)
 
     def _fast_swipe(self, x1, y1, x2, y2, velocity: int = 500):
         """
         velocity: the larger the faster
         """
         data = dict(fromX=x1, fromY=y1, toX=x2, toY=y2, velocity=velocity)
-        return self._session_http.post('/wdap/drag', data=data)
+        return self._session_http.post('/wda/drag', data=data)
 
     def swipe_left(self):
         """ swipe right to left """
@@ -1009,7 +1009,7 @@ class BaseClient(object):
         """
         if isinstance(value, six.string_types):
             value = list(value)
-        return self._session_http.post('/wdap/keys', data={'value': value})
+        return self._session_http.post('/wda/keys', data={'value': value})
 
     def press(self, name: str):
         """
@@ -1020,7 +1020,7 @@ class BaseClient(object):
         if name not in valid_names:
             raise ValueError(
                 f"Invalid name: {name}, should be one of {valid_names}")
-        self._session_http.post("/wdap/pressButton", {"name": name})
+        self._session_http.post("/wda/pressButton", {"name": name})
 
     def press_duration(self, name: str, duration: float):
         """
@@ -1049,14 +1049,14 @@ class BaseClient(object):
         if name not in hid_usages:
             raise ValueError("Invalid name:", name)
         hid_usage = hid_usages[name]
-        return self._session_http.post("/wdap/performIoHidEvent", {"page": 0x0C, "usage": hid_usage, "duration": duration})
+        return self._session_http.post("/wda/performIoHidEvent", {"page": 0x0C, "usage": hid_usage, "duration": duration})
 
     def keyboard_dismiss(self):
         """
         Not working for now
         """
         raise RuntimeError("not pass tests, this method is not allowed to use")
-        self._session_http.post('/wdap/keyboard/dismiss')
+        self._session_http.post('/wda/keyboard/dismiss')
 
     def appium_settings(self, value: Optional[dict] = None) -> dict:
         """
@@ -1383,7 +1383,7 @@ class Alert(object):
         return self.http.post('/alert/dismiss')
 
     def buttons(self):
-        return self.http.get('/wdap/alert/buttons').value
+        return self.http.get('/wda/alert/buttons').value
 
     def click(self, button_name: Optional[Union[str, list]] = None):
         """
@@ -1809,7 +1809,7 @@ class Selector(object):
 
     # todo
     # handleGetIsAccessibilityContainer
-    # [[FBRoute GET:@"/wdap/element/:uuid/accessibilityContainer"] respondWithTarget:self action:@selector(handleGetIsAccessibilityContainer:)],
+    # [[FBRoute GET:@"/wda/element/:uuid/accessibilityContainer"] respondWithTarget:self action:@selector(handleGetIsAccessibilityContainer:)],
 
 
 class Element(object):
@@ -1831,13 +1831,13 @@ class Element(object):
         return self.http.fetch(method, '/element/' + self._id + url, data)
 
     def _wda_req(self, method, url, data=None):
-        return self.http.fetch(method, '/wdap/element/' + self._id + url, data)
+        return self.http.fetch(method, '/wda/element/' + self._id + url, data)
 
     def _prop(self, key):
         return self._req('GET', '/' + key.lstrip('/')).value
 
     def _wda_prop(self, key):
-        ret = self.http.get('/wdap/element/%s/%s' % (self._id, key)).value
+        ret = self.http.get('/wda/element/%s/%s' % (self._id, key)).value
         return ret
 
     @property
@@ -1928,7 +1928,7 @@ class Element(object):
         Args:
             duration (float): seconds of hold time
 
-        [[FBRoute POST:@"/wdap/element/:uuid/touchAndHold"] respondWithTarget:self action:@selector(handleTouchAndHold:)],
+        [[FBRoute POST:@"/wda/element/:uuid/touchAndHold"] respondWithTarget:self action:@selector(handleTouchAndHold:)],
         """
         return self._wda_req('post', '/touchAndHold', {'duration': duration})
 

@@ -3,11 +3,11 @@
 
 from __future__ import print_function, unicode_literals
 
-from src.wda import xcui_element_types
-from src.wda._proto import *
-from src.wda.exceptions import *
-from src.wda.usbmux import fetch
-from src.wda.usbmux.pyusbmux import list_devices, select_device
+from wdap import xcui_element_types
+from wdap._proto import *
+from wdap.exceptions import *
+from wdap.usbmux import fetch
+from wdap.usbmux.pyusbmux import list_devices, select_device
 from wdap.utils import inject_call, limit_call_depth, AttrDict, convert
 
 

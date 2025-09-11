@@ -15,7 +15,7 @@ from typing import List, Mapping, Optional
 from construct import Const, CString, Enum, FixedSized, GreedyBytes, Int16ul, Int32ul, Padding, Prefixed, StreamError, \
     Struct, Switch, this
 
-from src.wda.usbmux.exceptions import BadCommandError, BadDevError, MuxConnectError, \
+from wdap.usbmux.exceptions import BadCommandError, BadDevError, MuxConnectError, \
     MuxConnectToUsbmuxdError, MuxError, MuxVersionError, NotPairedError
 
 usbmuxd_version = Enum(Int32ul,

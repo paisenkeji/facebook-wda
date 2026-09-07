@@ -27,6 +27,7 @@ from deprecated import deprecated
 
 from wdap import xcui_element_types
 from wdap._proto import *
+from wdap.cv import CV, CVResult, CVMatch, CVStatus
 from wdap.exceptions import *
 from wdap.usbmux import fetch
 from wdap.usbmux.pyusbmux import list_devices, select_device
@@ -1058,16 +1059,421 @@ class BaseClient(object):
         raise RuntimeError("not pass tests, this method is not allowed to use")
         self._session_http.post('/wda/keyboard/dismiss')
 
-    def appium_settings(self, value: Optional[dict] = None) -> dict:
+    def appium_settings(self, value: Optional[dict] = None,
+                        validate: bool = False) -> dict:
         """
         Get and set /session/$sessionId/appium/settings
+
+        Args:
+            value: None 表示读取当前全部设置；dict 表示设置
+            validate: True 时先用 :func:`validate_appium_settings` 校验 key 与 value。
+                      服务端对未知 key 是**静默忽略**的，拼错 key 不会报错，
+                      开启校验可以在本地就发现问题。
+
+        Returns:
+            dict: 当前全部 settings 的键值
+
+        Example::
+
+            # 读取
+            c.appium_settings()
+
+            # 设置（推荐用 AppiumSettings 枚举，避免拼错）
+            c.appium_settings({
+                AppiumSettings.SnapshotMaxDepth.value: 30,
+                AppiumSettings.UseFirstMatch.value: True,
+            })
+
+            # 带本地校验
+            c.appium_settings({AppiumSettings.ReduceMotion.value: True}, validate=True)
+
+        全部可用 key 见 :class:`AppiumSettings`（34 个，与服务端 FBSettings.m 一一对应），
+        每个 key 的类型与默认值见 :data:`APPIUM_SETTINGS_SPEC`。
         """
         if value is None:
             return self._session_http.get("/appium/settings").value
+        if validate:
+            value = validate_appium_settings(value)
         return self._session_http.post("/appium/settings",
                                        data={
                                            "settings": value
                                        }).value
+
+    # ======================== WDA 端点补全 ========================
+    def screens(self) -> list:
+        """
+        返回当前所有屏幕信息 GET /wda/screens
+
+        Returns:
+            list of dict, 每个屏幕一条记录
+        """
+        return self.http.get("/wda/screens").value
+
+    def app_launch_unattached(self, bundle_id: str):
+        """
+        启动应用但不依附到 session POST /wda/apps/launchUnattached
+
+        与 app_launch 的区别：不把该应用设为 session 的被测应用。
+
+        Args:
+            bundle_id (str): 应用 bundle id
+        """
+        return self.http.post("/wda/apps/launchUnattached", {"bundleId": bundle_id})
+
+    def device_location(self) -> dict:
+        """
+        读取设备真实定位 GET /wda/device/location
+
+        Returns:
+            dict: {"authorizationStatus": int, "latitude": float,
+                   "longitude": float, "altitude": float}
+
+        Note:
+            需要给 WebDriverAgent-Runner 授权定位服务，且定位数据更新有延迟，
+            返回值可能暂时为 0。
+        """
+        return self.http.get("/wda/device/location").value
+
+    def simulated_location(self) -> dict:
+        """
+        读取当前模拟定位 GET /wda/simulatedLocation
+
+        Returns:
+            dict: {"latitude": .., "longitude": .., "altitude": ..}
+        """
+        return self.http.get("/wda/simulatedLocation").value
+
+    def set_simulated_location(self, latitude: float, longitude: float):
+        """
+        设置模拟定位 POST /wda/simulatedLocation
+
+        Args:
+            latitude (float): 纬度
+            longitude (float): 经度
+        """
+        return self.http.post("/wda/simulatedLocation",
+                              {"latitude": latitude, "longitude": longitude})
+
+    def clear_simulated_location(self):
+        """清除模拟定位 DELETE /wda/simulatedLocation"""
+        return self.http.fetch("DELETE", "/wda/simulatedLocation")
+
+    def set_appearance(self, name: str):
+        """
+        切换浅色 / 深色外观 POST /wda/device/appearance（无需 session）
+
+        Args:
+            name (str): "light" 或 "dark"
+        """
+        name = (name or "").lower()
+        if name not in ("light", "dark"):
+            raise ValueError("appearance name must be 'light' or 'dark', got %r" % name)
+        return self.http.post("/wda/device/appearance", {"name": name})
+
+    def device_orientation(self) -> str:
+        """
+        读取设备物理朝向 GET /wda/deviceOrientation
+
+        Returns:
+            str: 如 "PORTRAIT" / "LANDSCAPE"
+        """
+        return self.http.get("/wda/deviceOrientation").value
+
+    @property
+    def rotation(self) -> dict:
+        """
+        读取屏幕旋转向量 GET /rotation
+
+        Returns:
+            dict: {"x": .., "y": .., "z": ..}
+        """
+        return self.http.get("/rotation").value
+
+    @rotation.setter
+    def rotation(self, value: dict):
+        """
+        设置屏幕旋转向量 POST /rotation
+
+        Args:
+            value (dict): {"x": .., "y": .., "z": ..}，三个键缺一不可
+        """
+        for key in ("x", "y", "z"):
+            if key not in value:
+                raise ValueError("rotation requires x, y and z, got %r" % value)
+        return self.http.post("/rotation", data=value)
+
+    def tap_with_number_of_taps(self, x, y, taps: int = 2, touches: int = 1):
+        """
+        多击 POST /wda/tapWithNumberOfTaps
+
+        Args:
+            x, y: 坐标（int 像素 / float 百分比）
+            taps (int): 连击次数
+            touches (int): 同时按下的手指数
+        """
+        x, y = self._percent2pos(x, y)
+        return self._session_http.post(
+            "/wda/tapWithNumberOfTaps",
+            {"x": x, "y": y, "numberOfTaps": taps, "numberOfTouches": touches})
+
+    def two_finger_tap(self, x, y):
+        """双指点击 POST /wda/twoFingerTap"""
+        x, y = self._percent2pos(x, y)
+        return self._session_http.post("/wda/twoFingerTap", dict(x=x, y=y))
+
+    def force_touch(self, x, y, pressure: float = 1.0, duration: float = 1.0):
+        """
+        3D Touch 重按 POST /wda/forceTouch
+
+        Args:
+            pressure (float): 按压力度 0..1
+            duration (float): 按压持续时间（秒）
+        """
+        x, y = self._percent2pos(x, y)
+        return self._session_http.post(
+            "/wda/forceTouch",
+            {"x": x, "y": y, "pressure": pressure, "duration": duration})
+
+    def press_and_drag(self, from_x, from_y, to_x, to_y,
+                       press_duration: float = 0.5,
+                       hold_duration: float = 0.5,
+                       velocity: float = 500.0):
+        """
+        长按后拖拽 POST /wda/pressAndDragWithVelocity
+
+        Args:
+            press_duration (float): 起点按住时长（秒）
+            hold_duration (float): 终点停留时长（秒）
+            velocity (float): 拖拽速度，越大越快
+        """
+        data = {
+            "fromX": from_x, "fromY": from_y,
+            "toX": to_x, "toY": to_y,
+            "pressDuration": press_duration,
+            "holdDuration": hold_duration,
+            "velocity": velocity,
+        }
+        return self._session_http.post("/wda/pressAndDragWithVelocity", data=data)
+
+    def scroll(self,
+               direction: Optional[str] = None,
+               distance: float = 1.0,
+               name: Optional[str] = None,
+               predicate_string: Optional[str] = None,
+               to_visible: bool = False):
+        """
+        滚动 POST /wda/scroll
+
+        四种用法互斥，按 name > direction > predicate_string > to_visible 的优先级：
+
+        Args:
+            direction (str): up / down / left / right，按元素尺寸归一化距离滚动
+            distance (float): 滚动距离，相对元素宽高，1.0 即一屏
+            name (str): 滚动到指定 identifier 的子元素可见
+            predicate_string (str): 滚动到满足 NSPredicate 的子元素可见
+            to_visible (bool): 滚动到当前元素可见
+
+        Raises:
+            ValueError: 未指定任何有效参数
+        """
+        if name:
+            data = {"name": name}
+        elif direction:
+            if direction not in ("up", "down", "left", "right"):
+                raise ValueError("Invalid direction:", direction)
+            data = {"direction": direction, "distance": distance}
+        elif predicate_string:
+            data = {"predicateString": predicate_string}
+        elif to_visible:
+            data = {"toVisible": True}
+        else:
+            raise ValueError(
+                "one of direction / name / predicate_string / to_visible is required")
+        return self._session_http.post("/wda/scroll", data=data)
+
+    def swipe_direction(self, direction: str, x, y, velocity: Optional[float] = None):
+        """
+        从指定点按方向快速滑动 POST /wda/swipe
+
+        Args:
+            direction (str): up / down / left / right
+            x, y: 起点坐标
+            velocity (float): 滑动速度，越大越快
+        """
+        if direction not in ("up", "down", "left", "right"):
+            raise ValueError("Invalid direction:", direction)
+        x, y = self._percent2pos(x, y)
+        data = {"direction": direction, "x": x, "y": y}
+        if velocity is not None:
+            data["velocity"] = velocity
+        return self._session_http.post("/wda/swipe", data=data)
+
+    def pinch(self, scale: float, velocity: float):
+        """
+        捏合缩放手势 POST /wda/pinch
+
+        Args:
+            scale (float): 缩放比例，必须 > 0
+            velocity (float): scale < 1 时须为负，scale > 1 时须为正
+
+        Example:
+            pinch_in  -> scale=0.5, velocity=-1
+            pinch_out -> scale=2.0, velocity=1
+        """
+        if scale <= 0:
+            raise ValueError("scale must be greater than 0")
+        return self._session_http.post("/wda/pinch",
+                                       {"scale": scale, "velocity": velocity})
+
+    def rotate_gesture(self, rotation: float, velocity: float = 1.0):
+        """
+        旋转手势 POST /wda/rotate
+
+        Args:
+            rotation (float): 旋转弧度
+            velocity (float): 旋转速度
+        """
+        return self._session_http.post("/wda/rotate",
+                                       {"rotation": rotation, "velocity": velocity})
+
+    def rotate_digital_crown(self, delta: float, velocity: Optional[float] = None):
+        """
+        旋转数字表冠 POST /wda/rotateDigitalCrown（watchOS）
+
+        Args:
+            delta (float): 旋转增量
+            velocity (float): 旋转速度
+        """
+        data = {"delta": delta}
+        if velocity is not None:
+            data["velocity"] = velocity
+        return self._session_http.post("/wda/rotateDigitalCrown", data=data)
+
+    def perform_hand_gesture(self, name: str):
+        """
+        执行系统手势 POST /wda/performHandGesture
+
+        Args:
+            name (str): 手势名称，如 "Screenshot"、"Shake" 等 watchOS 手势
+        """
+        return self._session_http.post("/wda/performHandGesture", {"name": name})
+
+    def touch_id(self, match: bool = True):
+        """
+        模拟 Touch ID / Face ID 结果 POST /wda/touch_id
+
+        Args:
+            match (bool): True 表示指纹/面容匹配成功
+        """
+        return self._session_http.post("/wda/touch_id", {"match": match})
+
+    def siri_activate(self, text: str):
+        """
+        唤起 Siri 并识别语音文本 POST /wda/siri/activate
+
+        Args:
+            text (str): 交给 Siri 的文本
+        """
+        return self._session_http.post("/wda/siri/activate", {"text": text})
+
+    def expect_notification(self, name: str, timeout: float = 60.0,
+                            type: str = "plain"):
+        """
+        等待指定通知出现 POST /wda/expectNotification
+
+        Args:
+            name (str): 通知名（必填）
+            timeout (float): 最长等待秒数
+            type (str): "plain" 或 "darwin"
+        """
+        if type not in ("plain", "darwin"):
+            raise ValueError("type must be 'plain' or 'darwin', got %r" % type)
+        return self._session_http.post(
+            "/wda/expectNotification",
+            {"name": name, "timeout": timeout, "type": type})
+
+    def reset_app_auth(self, resource: int):
+        """
+        重置应用授权 POST /wda/resetAppAuth
+
+        Args:
+            resource (int): 权限资源编号
+        """
+        return self._session_http.post("/wda/resetAppAuth", {"resource": resource})
+
+    def perform_accessibility_audit(self, audit_types: Optional[list] = None) -> list:
+        """
+        执行无障碍审计 POST /wda/performAccessibilityAudit
+
+        Args:
+            audit_types (list): 审计类型列表，None 表示全部（XCUIAccessibilityAuditTypeAll）
+
+        Returns:
+            list: 审计结果
+        """
+        data = {}
+        if audit_types:
+            data["auditTypes"] = audit_types
+        return self._session_http.post("/wda/performAccessibilityAudit", data=data).value
+
+    def video_start(self, fps: int = 24, codec: int = 0):
+        """
+        开始录屏 POST /wda/video/start
+
+        Args:
+            fps (int): 帧率，默认 24
+            codec (int): 编码格式，默认 0
+        """
+        return self._session_http.post("/wda/video/start",
+                                       {"fps": fps, "codec": codec})
+
+    def video_stop(self):
+        """停止录屏 POST /wda/video/stop"""
+        return self._session_http.post("/wda/video/stop")
+
+    def video(self):
+        """查询录屏状态 GET /wda/video"""
+        return self._session_http.get("/wda/video").value
+
+    def voice_over_enabled(self) -> bool:
+        """VoiceOver 是否开启 GET /wda/voiceOver/enabled"""
+        return self.http.get("/wda/voiceOver/enabled").value
+
+    def voice_over_enable(self):
+        """开启 VoiceOver POST /wda/voiceOver/enable"""
+        return self.http.post("/wda/voiceOver/enable")
+
+    def voice_over_disable(self):
+        """关闭 VoiceOver POST /wda/voiceOver/disable"""
+        return self.http.post("/wda/voiceOver/disable")
+
+    def voice_over_move(self, direction: str):
+        """
+        VoiceOver 焦点移动 POST /wda/voiceOver/move
+
+        Args:
+            direction (str): 移动方向，如 "next" / "previous"
+        """
+        return self.http.post("/wda/voiceOver/move", {"direction": direction})
+
+    def voice_over_speech(self) -> str:
+        """读取 VoiceOver 当前朗读内容 GET /wda/voiceOver/currentSpeech"""
+        return self.http.get("/wda/voiceOver/currentSpeech").value
+
+    def keyboard_input(self, keys: list):
+        """
+        按键序列输入 POST /wda/element/0/keyboardInput
+
+        与 send_keys 的区别：send_keys 走文本输入，这里是逐「键」输入，
+        支持组合键，需要 Xcode15+ / iPadOS17+。
+
+        Args:
+            keys (list): 键名列表，如 ["a"] 或 [["a", ["shift"]]]
+        """
+        if not isinstance(keys, (list, tuple)):
+            raise TypeError("keys must be a list")
+        return self._session_http.post("/wda/element/0/keyboardInput",
+                                       {"keys": list(keys)})
 
     def xpath(self, value):
         """
@@ -1460,6 +1866,23 @@ class Client(BaseClient):
     @property
     def alert(self) -> Alert:
         return Alert(self)
+
+    @cached_property
+    def cv(self) -> CV:
+        """
+        CV / Vision 图像与文字识别接口（需要 WDA 带 OpenCV + Vision 支持）
+
+        Example::
+
+            c.cv.status()                       # 探测能力
+            c.cv.find_text("登录", tap=True)     # 找字点击
+            c.cv.match_image("tpl.png", tap=True)  # 找图点击
+            c.cv.find_color("#FF5522")          # 找色
+
+        Returns:
+            wdap.cv.CV
+        """
+        return CV(self)
 
 
 Session = Client  # for compability
@@ -1989,6 +2412,152 @@ class Element(object):
 
     # todo lot of other operations
     # tap_hold
+
+    def screenshot(self, png_filename: Optional[str] = None, format='pillow'):
+        """
+        截取元素图片 GET /element/$id/screenshot
+
+        Args:
+            png_filename (str): 可选，保存文件名
+            format (str): "raw" 或 "pillow"（默认）
+
+        Returns:
+            PIL.Image 或 png 二进制
+        """
+        value = self._req('GET', '/screenshot').value
+        raw_value = base64.b64decode(value)
+        if png_filename:
+            with open(png_filename, 'wb') as f:
+                f.write(raw_value)
+        if format == 'raw':
+            return raw_value
+        elif format == 'pillow':
+            from PIL import Image
+            return Image.open(io.BytesIO(raw_value)).convert("RGB")
+        raise ValueError("unknown format")
+
+    def double_tap(self):
+        """双击 POST /wda/element/:uuid/doubleTap"""
+        return self._wda_req('post', '/doubleTap')
+
+    def two_finger_tap(self):
+        """双指点击 POST /wda/element/:uuid/twoFingerTap"""
+        return self._wda_req('post', '/twoFingerTap')
+
+    def tap_with_number_of_taps(self, taps: int = 2, touches: int = 1):
+        """
+        多击 POST /wda/element/:uuid/tapWithNumberOfTaps
+
+        Args:
+            taps (int): 连击次数
+            touches (int): 同时按下的手指数
+        """
+        return self._wda_req('post', '/tapWithNumberOfTaps', {
+            "numberOfTaps": taps,
+            "numberOfTouches": touches,
+        })
+
+    def force_touch(self, pressure: float = 1.0, duration: float = 1.0,
+                    x: Optional[float] = None, y: Optional[float] = None):
+        """
+        3D Touch 重按 POST /wda/element/:uuid/forceTouch
+
+        Args:
+            pressure (float): 按压力度
+            duration (float): 持续时间（秒）
+            x, y: 可选，元素内的按压点；不传则由服务端决定
+        """
+        data = {"pressure": pressure, "duration": duration}
+        if x is not None and y is not None:
+            data.update({"x": x, "y": y})
+        return self._wda_req('post', '/forceTouch', data)
+
+    def rotate(self, rotation: float, velocity: float = 1.0):
+        """
+        旋转手势 POST /wda/element/:uuid/rotate
+
+        Args:
+            rotation (float): 旋转弧度
+            velocity (float): 旋转速度
+        """
+        return self._wda_req('post', '/rotate',
+                             {"rotation": rotation, "velocity": velocity})
+
+    def swipe_direction(self, direction: str, velocity: Optional[float] = None):
+        """
+        按方向滑动 POST /wda/element/:uuid/swipe
+
+        Args:
+            direction (str): up / down / left / right
+            velocity (float): 滑动速度
+        """
+        if direction not in ('up', 'down', 'left', 'right'):
+            raise ValueError("Invalid direction:", direction)
+        data = {"direction": direction}
+        if velocity is not None:
+            data["velocity"] = velocity
+        return self._wda_req('post', '/swipe', data)
+
+    def press_and_drag(self, to_element,
+                       press_duration: float = 0.5,
+                       hold_duration: float = 0.5,
+                       velocity: float = 500.0):
+        """
+        长按本元素后拖到另一个元素 POST /wda/element/:uuid/pressAndDragWithVelocity
+
+        Args:
+            to_element (Element or str): 目标元素或元素 id
+        """
+        to_id = to_element.id if isinstance(to_element, Element) else str(to_element)
+        return self._wda_req('post', '/pressAndDragWithVelocity', {
+            "toElement": to_id,
+            "pressDuration": press_duration,
+            "holdDuration": hold_duration,
+            "velocity": velocity,
+        })
+
+    def drag(self, from_x: float, from_y: float, to_x: float, to_y: float,
+             duration: float = 0.5):
+        """
+        在元素内拖拽 POST /wda/element/:uuid/dragfromtoforduration
+
+        Args:
+            from_x, from_y, to_x, to_y (float): 相对元素的偏移
+            duration (float): 拖拽时长（秒）
+        """
+        return self._wda_req('post', '/dragfromtoforduration', {
+            "fromX": from_x, "fromY": from_y,
+            "toX": to_x, "toY": to_y,
+            "duration": duration,
+        })
+
+    def scroll_to(self):
+        """滚动到本元素可见 POST /wda/element/:uuid/scrollTo"""
+        return self._wda_req('post', '/scrollTo')
+
+    def get_visible_cells(self) -> list:
+        """获取可见 cell 元素 id 列表 GET /wda/element/:uuid/getVisibleCells"""
+        return self._wda_req('get', '/getVisibleCells').value
+
+    def keyboard_input(self, keys: list):
+        """
+        按键序列输入 POST /wda/element/:uuid/keyboardInput
+
+        Args:
+            keys (list): 键名列表，需要 Xcode15+ / iPadOS17+
+        """
+        if not isinstance(keys, (list, tuple)):
+            raise TypeError("keys must be a list")
+        return self._wda_req('post', '/keyboardInput', {"keys": list(keys)})
+
+    def focuse(self):
+        """获取焦点 POST /wda/element/:uuid/focuse（主要用于 tvOS）"""
+        return self._wda_req('post', '/focuse')
+
+    @property
+    def focused(self) -> bool:
+        """是否获得焦点 GET /element/:uuid/attribute/focused"""
+        return self._req('GET', '/attribute/focused').value
 
     def selected(self):
         ''' Element has been selected.

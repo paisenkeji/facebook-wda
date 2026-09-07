@@ -716,6 +716,131 @@ Latest WDA Version Testing Report:
 - [WDA Version 7.1.1](e2e_benchmarks/reports/WDA_V711.md)
 - [WDA Version 6.1.1](e2e_benchmarks/reports/WDA_V611.md)
 
+## 图像与文字识别（CV / Vision）`client.cv`
+> 需要服务端 WDA 为带 OpenCV + Vision 的分支（如 `wda_cv_vision`），接口定义见
+> `WebDriverAgentLib/Commands/FBVisionCommands.m`。9 个端点全部已封装。
+
+```python
+import wdap
+c = wdap.USBClient()          # 或 wdap.Client()
+
+# 0) 能力探测：判断当前 WDA 包是否带 OpenCV（不需要 session）
+status = c.cv.status()
+print(status.cv_available, status.vision_available, status.opencv_version, status.scale)
+
+# 1) 取原始分辨率截图（做模板图用）
+c.cv.snapshot("screen.png")                  # 存文件
+data = c.cv.snapshot(max_width=400)          # 拿二进制，可按比例缩小
+
+# 2) OCR：识别整屏文字
+for item in c.cv.ocr(languages=["zh-Hans", "en-US"]):
+    print(item.text, item.confidence, item.center)   # center 是逻辑点，可直接点击
+
+# 3) 找字并点击（contains / exact / regex 三种模式）
+c.cv.find_text("登录", tap=True)
+c.cv.tap_text("登录")                        # 等价简写，返回是否真的点了
+
+# 4) 等待文字出现（timeout / interval 单位毫秒，timeout 上限 60000）
+ret = c.cv.wait_for_text("加载完成", timeout=10000, interval=500)
+if ret:                                     # 未命中不报错，用 found 判断
+    print("等到了", ret.first.center, "耗时 ms:", ret.waited)
+
+# 5) 找图并点击（template 支持 文件路径 / bytes / base64 / PIL.Image）
+ret = c.cv.match_image("tpl.png", threshold=0.85, tap=True)
+ret = c.cv.match_image("tpl.png", scale_min=0.8, scale_max=1.2,
+                       scale_steps=5, region=(0, 0, 1170, 1200))   # 多尺度 + 限定区域
+
+# 6) 等待图片出现
+c.cv.wait_for_image("tpl.png", timeout=15000, tap=True)
+
+# 7) 找色（color 支持 "#RRGGBB" / "#RGB" / [r, g, b]）
+c.cv.find_color("#FF5522", color_space="hsv", tolerance=12, tap=True)
+
+# 8) 等待颜色出现
+c.cv.wait_for_color([255, 85, 34], timeout=8000)
+```
+
+返回值统一是 `CVResult`：
+
+| 属性 / 方法 | 说明 |
+| --- | --- |
+| `found` / `count` | 是否命中 / 命中数量（支持 `if ret:`、`len(ret)`） |
+| `results` / `ret[0]` / `for x in ret` | 命中列表，元素为 `CVMatch` |
+| `first` / `tapped_item` | 第一条结果 / 被点击的那一条 |
+| `item.x` / `item.y` | **逻辑点**坐标，可直接用于 `c.click(x, y)` |
+| `item.pixel_x` / `item.pixel_y` / `item.rect` | 截图像素坐标与矩形 |
+| `item.text` / `item.confidence` / `item.char_boxes` | 文字结果专有 |
+| `item.score` / `item.matched_scale` | 找图/找色结果专有（`matched_scale` 为命中时模板缩放比） |
+| `scale` / `image_size` / `waited` / `tapped` | 像素比 / 截图尺寸 / 实际等待毫秒 / 是否点了 |
+| `save_debug_image(path)` | 保存 `debug=True` 时的标注图 |
+
+> 坐标系：截图与 `region` / `rect` 都是**设备原始像素**，`x` / `y` 是**逻辑点**，`scale` 为两者比值。
+> 所有查找接口的通用参数：`region`、`index`、`tap`、`duration`(ms)、`taps`、`debug`；
+> `wait*` 另加 `timeout`(ms，上限 60000)、`interval`(ms)。未命中 / 等待超时都返回 HTTP 200，用 `found` 判断。
+
+## Appium Settings
+`c.appium_settings()` 读取、`c.appium_settings({...})` 设置，可用 key 见 `wdap.AppiumSettings`
+枚举（34 个，与服务端 `FBSettings.m` 一一对应），每个 key 的类型与默认值见 `wdap.APPIUM_SETTINGS_SPEC`。
+
+```python
+from wdap import AppiumSettings
+
+c.appium_settings()                                    # 读取全部
+c.appium_settings({                                    # 设置
+    AppiumSettings.SnapshotMaxDepth.value: 30,
+    AppiumSettings.UseFirstMatch.value: True,
+    AppiumSettings.MaxTypingFrequency.value: 30,       # 输入太快丢字时调小
+})
+c.appium_settings({AppiumSettings.ReduceMotion.value: True}, validate=True)
+```
+
+`validate=True` 会在本地校验 key 与 value 类型 —— 服务端对未知 key 是**静默忽略**的，
+拼错 key 不会报错。常用 key：
+
+| key | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `shouldUseCompactResponses` | bool | True | 元素响应只返回精简字段 |
+| `elementResponseAttributes` | str | `type,label` | 精简响应时的属性白名单 |
+| `snapshotMaxDepth` | int | 50 | page source 快照最大层级，越大越慢 |
+| `useFirstMatch` | bool | False | 命中第一个即返回，显著提速 |
+| `boundElementsByIndex` | bool | False | 按索引绑定元素 |
+| `screenshotQuality` | int | 1 | 截图质量 |
+| `screenshotOrientation` | str | `auto` | `auto`/`portrait`/`landscape` |
+| `mjpegServerFramerate` | int | 10 | MJPEG 推流帧率 |
+| `mjpegScalingFactor` | int | 100 | MJPEG 推流缩放百分比 |
+| `mjpegServerScreenshotQuality` | int | 25 | MJPEG 推流质量 |
+| `mjpegFixOrientation` | bool | False | MJPEG 是否修正方向 |
+| `keyboardAutocorrection` | bool | False | 关闭键盘自动纠错 |
+| `keyboardPrediction` | bool | False | 关闭键盘联想 |
+| `maxTypingFrequency` | int | 60 | 每秒最大输入字符数 |
+| `useClearTextShortcut` | bool | True | 清空输入框用全选删除 |
+| `waitForIdleTimeout` | float | 10.0 | 等待应用空闲超时（秒） |
+| `animationCoolOffTimeout` | float | 2.0 | 动画冷却（秒） |
+| `accessibilityDeadline` | float | 120.0 | 无障碍快照最长等待（秒） |
+| `reduceMotion` | bool | False | 减弱动效 |
+| `defaultActiveApplication` | str | `auto` | 默认活跃应用 |
+| `activeAppDetectionPoint` | str | `64.00,64.00` | 活跃应用探测点 |
+| `acceptAlertButtonSelector` | str | `""` | 弹窗确认按钮 class chain |
+| `dismissAlertButtonSelector` | str | `""` | 弹窗取消按钮 class chain |
+| `autoClickAlertSelector` | str | `""` | 自动点击弹窗按钮（置空关闭） |
+| `defaultAlertAction` | str | `""` | `accept` / `dismiss` |
+| `respectSystemAlerts` | bool | False | 系统弹窗是否参与自动处理 |
+
+## 补充的 WDA 端点
+除 CV 之外，本次还补齐了官方 WDA 已支持、但此前客户端未封装的端点：
+
+Session 级：`screens()`、`app_launch_unattached()`、`device_location()` / `simulated_location()` /
+`set_simulated_location()` / `clear_simulated_location()`、`set_appearance()`、`device_orientation()`、
+`rotation`(property)、`tap_with_number_of_taps()`、`two_finger_tap()`、`force_touch()`、
+`press_and_drag()`、`scroll()`、`swipe_direction()`、`pinch()`、`rotate_gesture()`、
+`rotate_digital_crown()`、`perform_hand_gesture()`、`touch_id()`、`siri_activate()`、
+`expect_notification()`、`reset_app_auth()`、`perform_accessibility_audit()`、
+`video_start()` / `video_stop()` / `video()`、`voice_over_*()`、`keyboard_input()`
+
+Element 级：`screenshot()`、`double_tap()`、`two_finger_tap()`、`tap_with_number_of_taps()`、
+`force_touch()`、`rotate()`、`swipe_direction()`、`press_and_drag()`、`drag()`、`scroll_to()`、
+`get_visible_cells()`、`keyboard_input()`、`focuse()`、`focused`(property)
+
 ## Reference
 Source code
 

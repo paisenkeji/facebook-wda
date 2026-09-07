@@ -1,6 +1,32 @@
 CHANGES
 =======
 
+0.2.0
+-----
+
+* feat(cv): 新增 `wdap/cv.py`，封装 wda_cv_vision 分支的 9 个图像/文字识别端点
+  （`/wda/cv/status`、`/wda/cv/snapshot`、`/wda/vision/ocr`、`/wda/vision/findText`、
+  `/wda/vision/waitForText`、`/wda/cv/matchImage`、`/wda/cv/waitForImage`、
+  `/wda/cv/findColor`、`/wda/cv/waitForColor`），通过 `client.cv` 访问
+* feat(cv): `CVResult` / `CVMatch` / `CVStatus` 结果封装，支持逻辑点与像素坐标互转、
+  debug 标注图保存；模板图支持 文件路径 / bytes / base64 / PIL.Image 四种入参
+* feat(settings): 补全 `AppiumSettings` 枚举至 34 个 key（与服务端 FBSettings.m 一一对应），
+  新增 `APPIUM_SETTINGS_SPEC` 元数据表与 `validate_appium_settings()` 本地校验
+* feat: `appium_settings()` 增加 `validate` 参数，避免拼错 key 被服务端静默忽略
+* feat: 补齐 Session 级缺失端点（screens、launchUnattached、定位、appearance、
+  rotation、tapWithNumberOfTaps、twoFingerTap、forceTouch、pressAndDrag、scroll、
+  swipe、pinch、rotate、touch_id、siri、notification、appAuth、accessibilityAudit、
+  video、voiceOver、keyboardInput 等）
+* feat: 补齐 Element 级缺失端点（screenshot、doubleTap、twoFingerTap、forceTouch、
+  rotate、swipe、pressAndDrag、drag、scrollTo、getVisibleCells、keyboardInput、
+  focuse、focused 等）
+* doc: README 新增 CV/Vision 用法、Appium Settings 参数表与新增端点清单
+
+0.1.5
+-----
+
+* 首个发布版本，基于 openatx/facebook-wda，增强复杂触摸动作（TouchAction）
+
 1.4.7
 -----
 

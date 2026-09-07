@@ -1,19 +1,19 @@
 [build-system]
-# 构建依赖：指定 setuptools 和 wheel 版本，确保兼容性
-requires = ["setuptools>=61.0", "construct", "logzero", "six", "deprecated", "retry"]
+# 构建依赖：setuptools 和 wheel 是打包必需，其他为库运行依赖（需同步到下方 [project] dependencies）
+requires = ["setuptools>=61.0", "cached-property", "construct", "Pillow", "six", "deprecated", "retry"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "facebook-wda-plus"               # PyPI 唯一库名（已加 "plus" 避免与原库冲突）
-version = "0.1.4"                        # 语义化版本：主版本.次版本.修订号
+name = "facebook-wda-plus"               # PyPI 唯一库名
+version = "0.2.0"                        # 语义化版本
 authors = [
   { name = "太原湃森科技", email = "typaisenkeji@gmail.com" }
 ]
-description = "基于 openatx/facebook-wda 升级改造的 iOS 自动化库，增强触摸动作等功能"  # 简短描述（PyPI 列表页显示）
-readme = "README.md"                     # 关键：仅保留这一行！自动关联长描述和格式，无需额外配置
+description = "基于 openatx/facebook-wda 升级改造的 iOS 自动化库，增强触摸动作、图像识别(CV/Vision)与完整 WDA 端点封装"
+readme = "README.md"                     # 长描述文件（自动关联格式）
 requires-python = ">=3.10"               # 支持的 Python 版本
-license = { text = "MIT License" }       # SPDX 格式许可证（替代废弃的分类器）
-classifiers = [                          # 优化分类器，无冗余项
+license = { text = "MIT License" }       # 许可证
+classifiers = [                          # 分类器（便于 PyPI 检索）
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -23,11 +23,19 @@ classifiers = [                          # 优化分类器，无冗余项
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Intended Audience :: Developers",
 ]
+# ---------------------- 关键修复：添加依赖列表 ----------------------
+# 格式：["库名>=版本号", ...]，版本号可选（建议指定最低兼容版本）
 dependencies = [
+  "cached-property",        # 日志处理依赖
+  "construct",    # 二进制数据解析依赖
+  "six",           # Python 2/3 兼容性依赖
+  "deprecated",    # 废弃API提示依赖
+  "retry",          # 重试机制依赖
+  "Pillow",          # 重试机制依赖
 ]
 
 [tool.setuptools]
-# 指定需要打包的核心模块（仅打包 "wdap"，排除测试、示例等无关目录）
+# 指定需要打包的核心模块（排除无关目录）
 packages = ["wdap", "wdap.usbmux"]
 
 [project.urls]

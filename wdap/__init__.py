@@ -4,7 +4,7 @@
 from __future__ import print_function, unicode_literals
 
 #: 与 pyproject.toml 中的 version 保持一致
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 import base64

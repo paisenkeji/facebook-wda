@@ -1,6 +1,24 @@
 CHANGES
 =======
 
+0.2.1
+-----
+
+* fix(cv): `ocr()` 移除 `index` / `tap` / `duration` / `taps` 参数——服务端
+  `handleRecognizeText` 不走通用点击逻辑，传了会被静默忽略。要点文字请用 `find_text()`
+* fix(cv): `region` 的 width / height 必须为正。服务端拿到零尺寸区域会直接报
+  "The search region is outside of the source image bounds"，不会退化成整屏
+* fix(cv): `snapshot(format="jpg")` 归一化为 `"jpeg"`——服务端只认 `jpeg`，
+  写 `jpg` 会静默退回 png
+* fix(cv): 本地校验 `mode` / `method` / `colorSpace` / `level` / `taps` /
+  `timeout` / `interval` / `threshold` / `quality` / `minimumTextHeight` 取值范围，
+  避免写错后被服务端静默 clamp 或退回默认值
+* fix(cv): `CVStatus` 新增 `available` 属性；`__bool__` 改为"具备任意一项图像能力"
+* fix: 补上 `wdap.__version__`（此前只存在于不打包的仓库根 `__init__.py`，
+  `import wdap; wdap.__version__` 会 AttributeError）
+* feat(cv): 新增 `CVUnsupportedError`。设备上的 WDA 未编译 CV 支持时，9 个端点会返回
+  `status=110 Unhandled endpoint`，现翻译为带成因说明与验证方法的明确异常
+
 0.2.0
 -----
 

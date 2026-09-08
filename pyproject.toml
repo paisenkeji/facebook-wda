@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "facebook-wda-plus"               # PyPI 唯一库名
-version = "0.2.0"                        # 语义化版本
+version = "0.2.1"                        # 语义化版本
 authors = [
   { name = "太原湃森科技", email = "typaisenkeji@gmail.com" }
 ]

@@ -53,6 +53,8 @@ import os
 import re
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
+from wdap.exceptions import WDAError, WDARequestError
+
 try:
     from typing import Literal
 except ImportError:  # pragma: no cover
@@ -248,6 +250,41 @@ def _clean(data: Dict[str, Any]) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # 结果封装
 # --------------------------------------------------------------------------- #
+class CVUnsupportedError(WDAError):
+    """设备上运行的 WDA 不是带 CV/Vision 的构建
+
+    服务端返回 ``status=110 / unknown command / Unhandled endpoint`` 时抛出，
+    含义是这条路由**根本没有注册**，而不是调用姿势不对——通常是设备上装的
+    WDA 不是用 ``wda_cv_vision`` 这份源码编译的（或没重新编译部署）。
+    """
+
+#: 110 = FBCommandStatus 的 unknown command
+_UNKNOWN_COMMAND_STATUS = 110
+
+_CV_UNSUPPORTED_HINT = (
+    "当前设备上的 WDA 没有注册 %s 这条路由。\n"
+    "这不是调用姿势问题，而是设备上运行的 WDA 二进制不含 CV/Vision 支持，常见原因：\n"
+    "  1. 设备上的 WDA 不是用 wda_cv_vision 这份源码编译的（例如用了 tidevice/官方预编译包）；\n"
+    "  2. 源码更新后没有重新编译并部署到设备（xcodebuild test / tidevice xctest）；\n"
+    "  3. 部署的 bundle id 指向了设备上残留的旧 WDA App。\n"
+    "验证方法：curl http://<device>:8100/status 看 build 信息，"
+    "或 curl http://<device>:8100/wda/cv/status —— 带 CV 的构建会返回 "
+    "{'cvAvailable': ..., 'visionAvailable': ...} 而不是 unknown command。"
+)
+
+
+def _raise_if_unsupported(path: str, err: Exception) -> None:
+    """把 "unknown command" 翻译成一眼能看懂的错误"""
+    if not isinstance(err, WDARequestError):
+        return
+    if err.status != _UNKNOWN_COMMAND_STATUS:
+        return
+    value = err.value if isinstance(err.value, dict) else {}
+    if "Unhandled endpoint" not in str(value.get("message", "")):
+        return
+    raise CVUnsupportedError(_CV_UNSUPPORTED_HINT % path) from err
+
+
 class CVMatch(object):
     """单条命中结果
 
@@ -650,7 +687,11 @@ class CV(object):
         })
 
     def _post(self, path: str, data: Dict[str, Any], timeout: Optional[float] = None) -> CVResult:
-        value = self._client._session_http.post(path, data=data, timeout=timeout).value
+        try:
+            value = self._client._session_http.post(path, data=data, timeout=timeout).value
+        except WDARequestError as err:
+            _raise_if_unsupported(path, err)
+            raise
         return CVResult(value)
 
     # ------------------------------------------------------------------ #
@@ -666,8 +707,15 @@ class CV(object):
 
             if c.cv.status().cv_available:
                 c.cv.match_image("tpl.png", tap=True)
+
+        Raises:
+            CVUnsupportedError: 设备上的 WDA 未编译 CV 支持（路由不存在）
         """
-        value = self._client.http.get("/wda/cv/status").value
+        try:
+            value = self._client.http.get("/wda/cv/status").value
+        except WDARequestError as err:
+            _raise_if_unsupported("/wda/cv/status", err)
+            raise
         return CVStatus(value)
 
     # ------------------------------------------------------------------ #
@@ -692,7 +740,11 @@ class CV(object):
             "quality": quality,
             "maxWidth": max_width,
         })
-        return self._client._session_http.post("/wda/cv/snapshot", data=data).value
+        try:
+            return self._client._session_http.post("/wda/cv/snapshot", data=data).value
+        except WDARequestError as err:
+            _raise_if_unsupported("/wda/cv/snapshot", err)
+            raise
 
     def snapshot(self,
                  path: Optional[str] = None,

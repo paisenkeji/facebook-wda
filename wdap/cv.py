@@ -19,9 +19,19 @@ OpenCV + Vision 图像/文字识别接口封装
 
 坐标系约定（与服务端一致）：
 
-- 截图/``rect``/``region`` 使用**设备原始像素**坐标；
+- 截图 / ``rect`` / ``region`` 使用**设备原始像素**坐标；
 - 结果里的 ``x`` / ``y`` 是**逻辑点**坐标，可直接用于点击；
 - ``scale`` = 像素 / 逻辑点，即 ``pixelX / scale == x``。
+
+时间单位：``timeout`` / ``interval`` / ``duration`` 全部是**毫秒**（服务端内部才除以 1000）。
+
+几个服务端行为，本地已提前拦截，避免静默出错:
+
+- ``mode`` / ``method`` / ``colorSpace`` / ``level`` 写错会被服务端**静默退回默认值**；
+- ``format`` 只认 ``"jpeg"``，写 ``"jpg"`` 会静默变成 png；
+- ``region`` 的 width / height 必须为正，服务端**不会**退化成整屏而是直接报错；
+- ``taps`` 会被 clamp 到 1..3，``timeout`` 上限 60s、``interval`` 上限 5s；
+- ``ocr`` 不走通用点击逻辑，没有 tap 能力——要点文字请用 ``find_text``。
 
 典型用法::
 
@@ -58,6 +68,7 @@ __all__ = [
     "CVMatchMode",
     "CVColorSpace",
     "CVMatchMethod",
+    "CVLevel",
 ]
 
 Point = NamedTuple("Point", [("x", float), ("y", float)])
@@ -71,16 +82,24 @@ _DATA_URI_RE = re.compile(r"^data:image/\w+;base64,", re.I)
 
 
 class CVMatchMode:
-    """findText / waitForText 的匹配模式"""
+    """findText / waitForText 的匹配模式
+
+    服务端对取值大小写不敏感，且遇到非法值会**静默退回** ``contains``，
+    这里在本地先校验，避免写错模式而毫无察觉。
+    """
     CONTAINS = "contains"
     EXACT = "exact"
     REGEX = "regex"
 
+    ALL = ("contains", "exact", "regex")
+
 
 class CVColorSpace:
-    """findColor / waitForColor 的色彩空间"""
+    """findColor / waitForColor 的色彩空间（只认 ``hsv``，其余一律 rgb）"""
     RGB = "rgb"
     HSV = "hsv"
+
+    ALL = ("rgb", "hsv")
 
 
 class CVMatchMethod:
@@ -89,6 +108,26 @@ class CVMatchMethod:
     CCORR = "ccorr"
     SQDIFF = "sqdiff"
 
+    ALL = ("ccoeff", "ccorr", "sqdiff")
+
+
+class CVLevel:
+    """文字识别精度"""
+    FAST = "fast"
+    ACCURATE = "accurate"
+
+    ALL = ("fast", "accurate")
+
+
+def _check_choice(name: str, value: Optional[str], choices: Sequence[str]) -> Optional[str]:
+    """校验枚举型参数，统一转小写"""
+    if value is None:
+        return None
+    lowered = str(value).strip().lower()
+    if lowered not in choices:
+        raise ValueError("%s must be one of %s, got %r" % (name, list(choices), value))
+    return lowered
+
 
 # --------------------------------------------------------------------------- #
 # 参数归一化
@@ -96,29 +135,44 @@ class CVMatchMethod:
 def _normalize_region(
     region: Optional[Union[dict, Sequence, Region]]
 ) -> Optional[Dict[str, float]]:
-    """把区域参数统一成服务端要求的像素坐标 dict
+    """把区域参数统一成服务端要求的**源图像素坐标** dict
 
     Args:
         region: None（整屏）/ dict{x,y,width,height} / (x, y, width, height)
 
-    注意：给出时必须同时给 width 与 height，否则服务端视作整屏。
+    Raises:
+        ValueError: width / height 缺失或非正数
+
+    Note:
+        width 与 height **必须同时给出且大于 0**。服务端拿到零尺寸区域会直接
+        报错 ``The search region is outside of the source image bounds``，
+        而不会退化成整屏搜索——这里提前校验，省一次往返。
+
+        区域超出图像边界时服务端同样报上述错误，不会自动裁剪。
     """
     if region is None:
         return None
     if isinstance(region, dict):
-        keys = {k.lower(): v for k, v in region.items()}
-        return {
+        keys = {str(k).lower(): v for k, v in region.items()}
+        value = {
             "x": keys.get("x", 0),
             "y": keys.get("y", 0),
             "width": keys.get("width", keys.get("w", 0)),
             "height": keys.get("height", keys.get("h", 0)),
         }
-    if isinstance(region, (list, tuple)) and len(region) == 4:
+    elif isinstance(region, (list, tuple)) and len(region) == 4:
         x, y, w, h = region
-        return {"x": x, "y": y, "width": w, "height": h}
-    raise TypeError(
-        "region must be None, a dict or a 4-elements sequence (x, y, width, height), got %r"
-        % (region,))
+        value = {"x": x, "y": y, "width": w, "height": h}
+    else:
+        raise TypeError(
+            "region must be None, a dict or a 4-elements sequence (x, y, width, height), got %r"
+            % (region,))
+
+    if float(value["width"]) <= 0 or float(value["height"]) <= 0:
+        raise ValueError(
+            "region requires positive width and height in source image pixels, got %r"
+            % (value,))
+    return value
 
 
 def _normalize_color(color: Union[str, Sequence]) -> Union[str, list]:
@@ -318,14 +372,23 @@ class CVStatus(object):
 
     @property
     def opencv_version(self) -> str:
+        """OpenCV 版本号，未接入时为空串"""
         return self._raw.get("opencvVersion") or ""
 
     @property
     def scale(self) -> float:
+        """设备屏幕缩放比（像素 / 逻辑点）"""
         return float(self._raw.get("scale", 1.0))
 
+    @property
+    def available(self) -> bool:
+        """是否具备任意一项图像能力（找图找色 或 文字识别）"""
+        return self.cv_available or self.vision_available
+
     def __bool__(self):
-        return self.cv_available
+        # 注意：这里只表示"至少有一样能力"。要调 match_image/find_color
+        # 必须看 cv_available，要调 ocr/find_text 必须看 vision_available
+        return self.available
 
     def __repr__(self):
         return ("<CVStatus cv=%s vision=%s opencv=%r scale=%s>" % (
@@ -452,8 +515,12 @@ class CV(object):
     除 :meth:`status` 之外，所有接口都需要已建立的 session。
     """
 
-    #: wait* 接口的服务端超时上限（毫秒）
+    #: wait* 接口的服务端超时上限（毫秒）。超出会被服务端静默截断到 60s
     MAX_TIMEOUT_MS = 60000.0
+    #: wait* 接口的服务端轮询间隔上限（毫秒）。超出会被截断到 5s
+    MAX_INTERVAL_MS = 5000.0
+    #: 单次点击的连击次数上限，服务端会 clamp 到 1..3
+    MAX_TAPS = 3
 
     def __init__(self, client):
         self._client = client
@@ -468,6 +535,15 @@ class CV(object):
                 duration: Optional[float] = None,
                 taps: Optional[int] = None,
                 debug: Optional[bool] = None) -> Dict[str, Any]:
+        """查找类接口共有的参数
+
+        只有走 ``respondForMatches`` 的接口（findText / waitForText /
+        matchImage / waitForImage / findColor / waitForColor）才认 ``index`` /
+        ``tap`` / ``duration`` / ``taps``；``ocr`` 走的是独立的
+        ``handleRecognizeText``，传这些会被**静默忽略**，所以 :meth:`ocr` 不调用本方法。
+        """
+        if taps is not None and not 1 <= int(taps) <= CV.MAX_TAPS:
+            raise ValueError("taps must be in 1..%d, got %r" % (CV.MAX_TAPS, taps))
         return _clean({
             "region": _normalize_region(region),
             "index": index,
@@ -479,8 +555,23 @@ class CV(object):
 
     @staticmethod
     def _wait(timeout: Optional[float], interval: Optional[float]) -> Dict[str, Any]:
-        if timeout is not None and timeout > CV.MAX_TIMEOUT_MS:
-            raise ValueError("timeout must be <= %s ms" % CV.MAX_TIMEOUT_MS)
+        """wait* 接口的轮询参数
+
+        Args:
+            timeout: 最长等待时间，**毫秒**（服务端 ``/1000.0`` 后 clamp 到 0..60s）
+            interval: 两次截图间隔，**毫秒**（服务端 clamp 到 0.02..5s）
+
+        默认值与服务端一致：timeout=5000ms、interval=300ms。
+        """
+        for name, value, upper in (("timeout", timeout, CV.MAX_TIMEOUT_MS),
+                                   ("interval", interval, CV.MAX_INTERVAL_MS)):
+            if value is None:
+                continue
+            if value < 0:
+                raise ValueError("%s must be >= 0 ms, got %r" % (name, value))
+            if value > upper:
+                raise ValueError("%s must be <= %s ms (server clamps it), got %r"
+                                 % (name, upper, value))
         return _clean({"timeout": timeout, "interval": interval})
 
     @staticmethod
@@ -489,12 +580,73 @@ class CV(object):
                      language_correction: Optional[bool],
                      minimum_text_height: Optional[float],
                      char_boxes: Optional[bool]) -> Dict[str, Any]:
+        """文字识别类接口共有的参数
+
+        ``minimum_text_height`` 是相对图高的比例 0..1，服务端会 clamp 到单位区间。
+        ``languages`` 只接受字符串数组，空数组按"未指定"处理（系统自动判定）。
+        """
+        if minimum_text_height is not None:
+            if not 0.0 <= float(minimum_text_height) <= 1.0:
+                raise ValueError("minimum_text_height must be in 0..1, got %r"
+                                 % minimum_text_height)
+        langs = [str(item) for item in languages] if languages else None
         return _clean({
-            "level": level,
-            "languages": list(languages) if languages else None,
+            "level": _check_choice("level", level, CVLevel.ALL),
+            "languages": langs,
             "languageCorrection": language_correction,
             "minimumTextHeight": minimum_text_height,
             "charBoxes": char_boxes,
+        })
+
+    @staticmethod
+    def _image_common(template: Union[str, bytes, Any],
+                      threshold: Optional[float],
+                      method: Optional[str],
+                      max_results: Optional[int],
+                      scale_min: Optional[float],
+                      scale_max: Optional[float],
+                      scale_steps: Optional[int],
+                      use_mask: Optional[bool]) -> Dict[str, Any]:
+        """matchImage / waitForImage 共有的参数
+
+        多尺度匹配需要同时满足 ``scale_steps >= 2`` 且 ``scale_max > scale_min > 0``，
+        否则服务端只在原始尺寸上匹配一次（ scales = [1.0] ）。
+        缩放步数服务端上限为 32。
+        """
+        if threshold is not None and not 0.0 <= float(threshold) <= 1.0:
+            raise ValueError("threshold must be in 0..1, got %r" % threshold)
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        return _clean({
+            "template": _to_base64(template),
+            "threshold": threshold,
+            "method": _check_choice("method", method, CVMatchMethod.ALL),
+            "maxResults": max_results,
+            "scaleMin": scale_min,
+            "scaleMax": scale_max,
+            "scaleSteps": scale_steps,
+            "useMask": use_mask,
+        })
+
+    @staticmethod
+    def _color_common(color: Union[str, Sequence],
+                      tolerance: Optional[float],
+                      color_space: Optional[str],
+                      min_area: Optional[int],
+                      max_results: Optional[int]) -> Dict[str, Any]:
+        """findColor / waitForColor 共有的参数"""
+        if tolerance is not None and not 0 <= int(tolerance) <= 255:
+            raise ValueError("tolerance must be in 0..255, got %r" % tolerance)
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        if min_area is not None and int(min_area) < 0:
+            raise ValueError("min_area must be >= 0, got %r" % min_area)
+        return _clean({
+            "color": _normalize_color(color),
+            "tolerance": tolerance,
+            "colorSpace": _check_choice("colorSpace", color_space, CVColorSpace.ALL),
+            "minArea": min_area,
+            "maxResults": max_results,
         })
 
     def _post(self, path: str, data: Dict[str, Any], timeout: Optional[float] = None) -> CVResult:
@@ -523,11 +675,20 @@ class CV(object):
     # ------------------------------------------------------------------ #
     def snapshot_raw(self,
                      format: str = "png",
-                     quality: float = 0.9,
-                     max_width: int = 0) -> Dict[str, Any]:
-        """取当前截图，返回完整响应 value（含 format / imageSize / returnedSize / data）"""
+                     quality: Optional[float] = None,
+                     max_width: Optional[float] = None) -> Dict[str, Any]:
+        """取当前截图，返回完整响应 value（含 format / scale / imageSize / returnedSize / data）
+
+        服务端只认 ``"jpeg"`` 这一个非 png 取值，写 ``"jpg"`` 会被静默当成 png，
+        这里做了归一化。
+        """
+        fmt = _check_choice("format", format, ("png", "jpeg", "jpg"))
+        if fmt == "jpg":
+            fmt = "jpeg"
+        if quality is not None and not 0.0 <= float(quality) <= 1.0:
+            raise ValueError("quality must be in 0..1, got %r" % quality)
         data = _clean({
-            "format": format,
+            "format": fmt,
             "quality": quality,
             "maxWidth": max_width,
         })
@@ -536,15 +697,16 @@ class CV(object):
     def snapshot(self,
                  path: Optional[str] = None,
                  format: str = "png",
-                 quality: float = 0.9,
-                 max_width: int = 0) -> bytes:
-        """取当前设备的原始分辨率截图
+                 quality: Optional[float] = None,
+                 max_width: Optional[float] = None) -> bytes:
+        """取当前设备的**原始分辨率**截图（不带状态栏合成、不缩放）
 
         Args:
             path: 可选，保存到该文件
-            format: "png"（无损，适合做模板）或 "jpeg"
-            quality: 仅 jpeg 生效
-            max_width: 大于 0 时按比例缩放到该宽度，减小传输体积
+            format: "png"（无损，适合做模板，默认）或 "jpeg"/"jpg"
+            quality: 仅 jpeg 生效，0..1，服务端默认 0.9
+            max_width: 大于 0 时按比例缩放到该宽度，减小传输体积；
+                       注意返回的 ``returnedSize`` 会与 ``imageSize`` 不同
 
         Returns:
             图片二进制内容
@@ -566,18 +728,23 @@ class CV(object):
     # ------------------------------------------------------------------ #
     def ocr(self,
             region: Optional[Union[dict, Sequence]] = None,
-            level: str = "accurate",
+            level: str = CVLevel.ACCURATE,
             languages: Optional[Sequence[str]] = None,
             language_correction: Optional[bool] = None,
             minimum_text_height: Optional[float] = None,
             char_boxes: Optional[bool] = None,
             debug: Optional[bool] = None) -> CVResult:
-        """识别当前屏幕的全部文字
+        """识别当前屏幕的全部文字（不做过滤，不点击）
+
+        服务端实现是 ``handleRecognizeText``，**不经过**通用的
+        ``respondForMatches``，所以本方法没有 ``index`` / ``tap`` / ``duration`` /
+        ``taps`` 参数——要"找到并点击"请用 :meth:`find_text`。
 
         Args:
             region: 只识别该像素区域，可显著提速
-            level: "accurate"（准但慢）或 "fast"
-            languages: BCP-47 语言列表，如 ["zh-Hans", "en-US"]
+            level: "accurate"（准但慢，默认）或 "fast"
+            languages: BCP-47 语言列表，如 ["zh-Hans", "en-US"]；
+                       留空则由系统自动判定
             language_correction: 关闭后可拿到未经校正的原文，适合验证码/数字串
             minimum_text_height: 相对图高的最小文字高度 0..1，过滤噪点
             char_boxes: 是否返回逐字包围盒，用于点某个具体字
@@ -591,7 +758,7 @@ class CV(object):
             for item in c.cv.ocr(languages=["zh-Hans"]):
                 print(item.text, item.center)
         """
-        data = self._common(region=region, debug=debug)
+        data = _clean({"region": _normalize_region(region), "debug": debug})
         data.update(self._text_common(level, languages, language_correction,
                                       minimum_text_height, char_boxes))
         return self._post("/wda/vision/ocr", data)
@@ -634,7 +801,7 @@ class CV(object):
         data.update(self._text_common(level, languages, language_correction,
                                       minimum_text_height, char_boxes))
         data["text"] = text
-        data["mode"] = mode
+        data["mode"] = _check_choice("mode", mode, CVMatchMode.ALL)
         return self._post("/wda/vision/findText", data)
 
     # ------------------------------------------------------------------ #
@@ -673,7 +840,7 @@ class CV(object):
         data.update(self._text_common(level, languages, language_correction,
                                       minimum_text_height, char_boxes))
         data["text"] = text
-        data["mode"] = mode
+        data["mode"] = _check_choice("mode", mode, CVMatchMode.ALL)
         data.update(self._wait(timeout, interval))
         # 留足 HTTP 超时余量（wait* 跑在服务端独立队列上）
         return self._post("/wda/vision/waitForText", data,
@@ -706,7 +873,9 @@ class CV(object):
             max_results: 最多返回几个结果，按得分降序，默认 5
             region: 限定搜索区域（像素坐标），显著提速
             scale_min / scale_max: 多尺度匹配的缩放区间，默认 1.0
-            scale_steps: 缩放步数，1 表示只匹配原尺寸（零额外开销）
+            scale_steps: 缩放步数。只在 ``>= 2`` 且 ``scale_max > scale_min > 0``
+                         时才真的做多尺度，否则等价于只匹配原尺寸；
+                         服务端上限 32
             use_mask: 用模板 alpha 通道作掩膜；仅对 sqdiff / ccorr 生效，
                       与 ccoeff 同时指定会自动降级为 ccorr
             index / tap / duration / taps / debug: 通用参数
@@ -716,16 +885,8 @@ class CV(object):
         """
         data = self._common(region=region, index=index, tap=tap,
                             duration=duration, taps=taps, debug=debug)
-        data["template"] = _to_base64(template)
-        data.update(_clean({
-            "threshold": threshold,
-            "method": method,
-            "maxResults": max_results,
-            "scaleMin": scale_min,
-            "scaleMax": scale_max,
-            "scaleSteps": scale_steps,
-            "useMask": use_mask,
-        }))
+        data.update(self._image_common(template, threshold, method, max_results,
+                                       scale_min, scale_max, scale_steps, use_mask))
         return self._post("/wda/cv/matchImage", data)
 
     # ------------------------------------------------------------------ #
@@ -751,16 +912,8 @@ class CV(object):
         """轮询等待图片出现，参数 = :meth:`match_image` + timeout / interval"""
         data = self._common(region=region, index=index, tap=tap,
                             duration=duration, taps=taps, debug=debug)
-        data["template"] = _to_base64(template)
-        data.update(_clean({
-            "threshold": threshold,
-            "method": method,
-            "maxResults": max_results,
-            "scaleMin": scale_min,
-            "scaleMax": scale_max,
-            "scaleSteps": scale_steps,
-            "useMask": use_mask,
-        }))
+        data.update(self._image_common(template, threshold, method, max_results,
+                                       scale_min, scale_max, scale_steps, use_mask))
         data.update(self._wait(timeout, interval))
         return self._post("/wda/cv/waitForImage", data,
                           timeout=max(60.0, timeout / 1000.0 + 30.0))
@@ -796,13 +949,8 @@ class CV(object):
         """
         data = self._common(region=region, index=index, tap=tap,
                             duration=duration, taps=taps, debug=debug)
-        data["color"] = _normalize_color(color)
-        data.update(_clean({
-            "tolerance": tolerance,
-            "colorSpace": color_space,
-            "minArea": min_area,
-            "maxResults": max_results,
-        }))
+        data.update(self._color_common(color, tolerance, color_space,
+                                       min_area, max_results))
         return self._post("/wda/cv/findColor", data)
 
     # ------------------------------------------------------------------ #
@@ -825,13 +973,8 @@ class CV(object):
         """轮询等待颜色出现，参数 = :meth:`find_color` + timeout / interval"""
         data = self._common(region=region, index=index, tap=tap,
                             duration=duration, taps=taps, debug=debug)
-        data["color"] = _normalize_color(color)
-        data.update(_clean({
-            "tolerance": tolerance,
-            "colorSpace": color_space,
-            "minArea": min_area,
-            "maxResults": max_results,
-        }))
+        data.update(self._color_common(color, tolerance, color_space,
+                                       min_area, max_results))
         data.update(self._wait(timeout, interval))
         return self._post("/wda/cv/waitForColor", data,
                           timeout=max(60.0, timeout / 1000.0 + 30.0))

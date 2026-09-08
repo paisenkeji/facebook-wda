@@ -775,8 +775,22 @@ c.cv.wait_for_color([255, 85, 34], timeout=8000)
 | `save_debug_image(path)` | 保存 `debug=True` 时的标注图 |
 
 > 坐标系：截图与 `region` / `rect` 都是**设备原始像素**，`x` / `y` 是**逻辑点**，`scale` 为两者比值。
-> 所有查找接口的通用参数：`region`、`index`、`tap`、`duration`(ms)、`taps`、`debug`；
-> `wait*` 另加 `timeout`(ms，上限 60000)、`interval`(ms)。未命中 / 等待超时都返回 HTTP 200，用 `found` 判断。
+> `find_text` / `match_image` / `find_color` 及对应的 `wait*` 支持通用参数：
+> `region`、`index`、`tap`、`duration`(ms)、`taps`、`debug`；`wait*` 另加 `timeout`(ms，上限 60000)、`interval`(ms，上限 5000)。
+> 未命中 / 等待超时都返回 HTTP 200，用 `found` 判断。
+
+**注意：`ocr()` 是例外**，它只做全量识别、不过通用的点击逻辑，因此**没有**
+`index` / `tap` / `duration` / `taps` 参数——要"找到文字并点击"请用 `find_text()`。
+
+几个服务端会静默吞掉的错误，客户端已在本地拦截并抛异常：
+
+| 写法 | 服务端真实行为 | 客户端处理 |
+| --- | --- | --- |
+| `mode="fuzzy"` / `method="orb"` / `color_space="lab"` | 静默退回默认值 | 抛 `ValueError`，只允许合法枚举 |
+| `snapshot(format="jpg")` | 只认 `"jpeg"`，写 `jpg` 会静默变 png | 自动归一化 `jpg`→`jpeg` |
+| `region={"x":0,"y":0,"width":0,...}` | 直接报错（不会退化成整屏） | 提前抛 `ValueError`，要求宽高为正 |
+| `taps=9` | clamp 到 1..3 | 抛 `ValueError` |
+| `timeout=70000` | clamp 到 60000ms | 抛 `ValueError` |
 
 ## Appium Settings
 `c.appium_settings()` 读取、`c.appium_settings({...})` 设置，可用 key 见 `wdap.AppiumSettings`

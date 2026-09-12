@@ -477,6 +477,17 @@ class USBMuxHTTPConnection(HTTPConnection):
 
     def connect(self):
         self.sock = self.__device.connect(self.__port)
+        # 这条路径不走 socket.create_connection，HTTPConnection.timeout 不会被自动
+        # 应用到 socket 上；不显式设置的话，WDA 卡住时读写会无限期阻塞。
+        if self.timeout is not None:
+            try:
+                self.sock.settimeout(self.timeout)
+            except OSError:
+                pass
+        try:
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
 
     def __enter__(self) -> HTTPConnection:
         return self

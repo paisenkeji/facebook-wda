@@ -792,6 +792,188 @@ c.cv.wait_for_color([255, 85, 34], timeout=8000)
 | `taps=9` | clamp 到 1..3 | 抛 `ValueError` |
 | `timeout=70000` | clamp 到 60000ms | 抛 `ValueError` |
 
+## 运行日志（`/wda/log/*`）`client.log`
+
+WDA **自己的**运行日志：HTTP 请求 / 逃逸的异常 / MJPEG 异常 / 监听器重建 /
+stderr 输出 / 上一次会话的崩溃报告。用来回答"端口还在但没反应""跑一小时整个 WDA
+掉了"这类事后看不见的问题。需要设备上的 WDA 用带 `/wda/log/*` 的源码编译。
+
+这些路由是 **session-less + standalone** 的：不需要 session，而且绕开共享路由队列——
+所以即使 WDA 主线程/队列卡死，也仍然问得到，这正是排查卡死时该用的通道。
+
+```python
+import wdap
+c = wdap.USBClient()
+
+c.log.available()                            # 这台设备的 WDA 支不支持
+c.log.stats().http["requests"]               # 计数器总览
+c.log.stats().listener_restarts              # 监听器被重建过几次
+
+snap = c.log.recent(limit=100, level="warn") # 最近 100 条 warn 以上
+for e in snap.entries:
+    print(e.format())
+
+c.log.errors(category=wdap.LogCategory.EXCEPTION)  # 只看异常
+c.log.crash(clear=True).report               # 上次进程是怎么死的
+c.log.save("wda.log", limit=5000)            # 纯文本落盘
+c.log.config(capacity=5000, stderr_capture=True)
+c.log.clear()                                # 清空条目（计数器与 seq 不重置）
+```
+
+增量跟随（`Ctrl-C` / `break` 退出）：
+
+```python
+for entry in c.log.follow(interval=1.0, level="warn"):
+    print(entry.format())
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `limit` | 1..20000（`recent`/`errors` 默认 200，`download` 默认 20000），超出服务端会 clamp |
+| `level` | `debug` / `info` / `warn` / `error` / `fatal`；**写错会被服务端静默当成 `info`**，客户端直接抛 `ValueError` |
+| `category` | `http` / `exception` / `mjpeg` / `socket` / `stderr` / `crash` / `lifecycle`，也接受任意自定义字符串 |
+| `since` | 只取 `seq >= since` 的条目，`follow()` 内部用它做增量 |
+
+⚠️ 一个容易踩的坑：这些 GET 端点的参数**不能拼在 URL 上**
+（`/wda/log/recent?limit=10` 无效）——服务端构造 `request.arguments` 时只解析
+**JSON body**。客户端已把关键字参数塞进 body，直接用即可。
+
+路由不存在时（设备上不是带日志支持的 WDA）抛 `LogUnsupportedError`，
+或先用 `c.log.available()` 探一次。
+
+## 设备激活（仅 USB）
+
+对标 go-ios 的 `ios activate`：走 `lockdown` + `com.apple.mobileactivationd` 完成设备激活。
+纯标准库实现（plist + ssl + urllib），**不嵌入 go-ios / tidevice**，可以安全打进 ipa。
+
+```python
+import wdap
+
+wdap.list_usb_devices()              # ['00008030-000D65402EF8202E', ...]
+wdap.activation_state(udid)          # 'Activated' / 'Unactivated' / None
+wdap.is_device_activated(udid)       # True / False
+
+result = wdap.activate_device(udid)  # 已激活则直接返回，可重复调用
+print(result.activated, result.state_before, result.state_after, result.detail)
+
+# 批量激活：单台失败不会中断其余设备
+for item in wdap.activate_all_usb_devices():
+    print(item.udid, item.activated, item.detail)
+```
+
+命令行（`activate_ios.py`）：
+
+```bash
+python activate_ios.py --list                                 # 列出 USB 设备
+python activate_ios.py --state <UDID>                         # 只查激活状态
+python activate_ios.py <UDID>                                 # 激活一台
+python activate_ios.py --all --proxy http://127.0.0.1:7890    # 批量，走代理访问 Apple
+```
+
+注意事项：
+
+- **只支持 USB 直连**：Wi-Fi 设备不在 usbmux 的 USB 列表里，会被直接排除。
+- **必须先配对**：在设备上点一次「信任此电脑」。配对记录优先从 usbmux 读，
+  读不到再退回本机的 `Apple\Lockdown\<UDID>.plist`（Windows 由 Apple Mobile Device Service 维护）。
+- 设备需要能访问 `albert.apple.com`，否则用 `--proxy` / `proxy=` 指定代理。
+- 主要异常：`DeviceNotFoundError`、`DeviceNotPairedError`、`LockdownError`、
+  `ServiceStartError`、`ActivationServerError`。
+
+## 自动拉起 WDA（iOS 版本分流：16 用 tidevice / 17+ 用 go-ios）
+
+⚠️ 这是**拉起 WDA**（跑 XCTest bundle），和上一节的「设备激活（ActivationState）」
+是两件事——名字像，但协议完全不同，别混。
+
+`USBClient(auto_activate=True)`（默认）探不到 WDA 时会自动拉起，后端按 iOS 版本选：
+
+| iOS 版本 | 后端 | 实际执行的命令 |
+|---|---|---|
+| 16 及以下 | `tidevice`（或 `tins2`） | `tidevice -u <UDID> xctest -B <bundle>` |
+| 17 及以上（含 26） | `go-ios` | `ios runwda --udid=<UDID> --bundleid=... --testrunnerbundleid=... --xctestconfig=...` |
+| 版本读不到 | 先 go-ios，失败回退 tidevice | — |
+
+**为什么必须分**：iOS 17 起 testmanagerd 换成 RemoteXPC，tidevice 0.12.x 走老的
+DeveloperDiskImage 路径，会在挂载镜像阶段直接失败（`DeveloperImage not found`）。
+
+两个后端都是**外部可执行程序**，通过 `subprocess` 拉起，库里不嵌入它们的任何代码。
+
+### iOS 17+ 的两个前置条件（go-ios 后端）
+
+`ios runwda` **不会自己起隧道**——go-ios README 明确写着：*For iOS 17+ devices you
+need to run `sudo ios tunnel start`*。少了这一步，runwda 起来后连不上 testmanagerd
+（RemoteXPC）会立刻退出，客户端看到的就是"拉起失败"。
+
+| 前置 | 命令 | 客户端开关 |
+|---|---|---|
+| 挂载开发者镜像 | `ios image auto --udid=<UDID>` | `mount_image=True`（默认 **False**，多一次子进程调用） |
+| 启动 tunnel daemon | `ios tunnel start` | `start_tunnel`（默认 **True**，会先探 `http://127.0.0.1:28100/health`） |
+
+隧道就绪探测复用 go-ios 自己的管理接口（`ios/tunnel/tunnel_api.go`）：
+`/health` 判断 agent 在不在，`/ready` 判断隧道是否已建好。已在别的终端手动起过
+daemon 时，客户端探测到就直接跳过拉起；起隧道失败**不阻断**，只记录警告——
+也许你已经用别的方式建好了。
+
+Windows 上没有管理员权限时用 userspace 模式：
+
+```python
+c = wdap.USBClient(wda_backend="goios", tunnel_mode="userspace")
+```
+
+userspace 模式需要 `wintun.dll` 在 `C:/Windows/system32`（从
+<https://git.zx2c4.com/wintun> 下载）。
+
+> 注意：隧道只影响 **testmanagerd（跑 XCTest）** 这条链路。WDA 起来后监听的
+> 8100 端口仍然通过 usbmux 转发访问，不受影响，客户端连接逻辑不用改。
+
+```python
+import wdap
+
+# 自动：读 ProductVersion 决定后端
+c = wdap.USBClient()
+
+# 强制指定后端 / 可执行文件路径
+c = wdap.USBClient(wda_backend="goios", goios_path=r"D:\tools\ios.exe")
+c = wdap.USBClient(wda_backend="tidevice", fallback=False)
+
+# go-ios 后端拉起前先挂开发者镜像（等价于 ios image auto）
+c = wdap.USBClient(wda_backend="goios", mount_image=True)
+
+# 自己在别的终端管理隧道时关掉自动拉起
+c = wdap.USBClient(wda_backend="goios", start_tunnel=False)
+
+# 单独探测 / 拉起隧道
+wdap.tunnel_agent_alive()                      # -> bool
+wdap.ensure_tunnel(mode="userspace")           # -> bool
+
+print(c.last_launch.backend, c.last_launch.ios_version, c.last_launch.detail)
+```
+
+直接用函数（拿到更详细的 `WdaLaunchResult`）：
+
+```python
+result = wdap.start_wda(udid, wda_bundle_id="com.demo.xctrunner", wda_port=8100)
+print(result.ok, result.backend, result.command, result.log_path)
+```
+
+命令行（`wda_start.py`）：
+
+```bash
+python wda_start.py <UDID>                      # 自动选后端
+python wda_start.py <UDID> --strategy tidevice  # 强制 tidevice
+python wda_start.py <UDID> --strategy goios --mount-image
+```
+
+注意事项：
+
+- `ok=True` 只代表**子进程活着**，WDA 是否真在监听端口要另外探测。
+- go-ios 的三个参数 `--bundleid` / `--testrunnerbundleid` / `--xctestconfig`
+  是**全给或全不给**（go-ios 源码硬校验），给了 `wda_bundle_id` 时客户端会补齐另外两个。
+- tidevice 的 `-e` 分隔符是**冒号**（`USE_PORT:8100`），go-ios 的 `--env` 是**等号**
+  （`--env=USE_PORT=8100`）—— 客户端已分别处理，自己拼命令时注意别写反。
+- iOS 17+ 若报 `DeveloperImage not found`：先 `ios image auto --udid=<UDID>`
+  （或 `mount_image=True`）；若 runwda 起来后立刻退出，基本都是隧道没起，
+  开 `start_tunnel=True`（默认）或手动 `ios tunnel start`。
+
 ## Appium Settings
 `c.appium_settings()` 读取、`c.appium_settings({...})` 设置，可用 key 见 `wdap.AppiumSettings`
 枚举（34 个，与服务端 `FBSettings.m` 一一对应），每个 key 的类型与默认值见 `wdap.APPIUM_SETTINGS_SPEC`。

@@ -1,6 +1,159 @@
 CHANGES
 =======
 
+0.2.5
+-----
+
+* feat: **拉起 WDA 按 iOS 版本分流**（新模块 `wdap/wda_launch.py`）。
+  iOS 16 及以下走 `tidevice xctest`，iOS 17 及以上（含 26）走 `go-ios runwda`，
+  版本读不到时先 go-ios、失败回退 tidevice。
+  原因：iOS 17 起 testmanagerd 换成 RemoteXPC（RSD 隧道），tidevice 0.12.x 仍走老的
+  DeveloperDiskImage 路径，会在挂载镜像阶段直接失败（`DeveloperImage not found`）。
+  - 两个后端都是外部可执行程序，用 subprocess 拉起，**库里不嵌入 go-ios / tidevice**。
+  - 命令契约已对照源码核对：tidevice 的 `-e` 分隔符是**冒号**（`-e USE_PORT:8100`），
+    go-ios 的 `--env` 是**等号**（`--env=USE_PORT=8100`）；go-ios 的 `--bundleid` /
+    `--testrunnerbundleid` / `--xctestconfig` 必须**全给或全不给**（源码硬校验）。
+  - `USBClient` 新增参数 `wda_backend` / `fallback` / `tidevice_path` / `goios_path` /
+    `mount_image`，并记录 `last_launch`（`WdaLaunchResult`：后端名、iOS 版本、命令行、日志路径）。
+  - 新增 `mount_developer_image()`（等价 `ios image auto`），仅 go-ios 后端需要。
+  - **iOS 17+ 的硬前置：go-ios tunnel daemon**。go-ios 的 `runwda` 不会自己起隧道
+    （README：*For iOS 17+ devices you need to run `sudo ios tunnel start`*），
+    没有隧道会在连接 testmanagerd（RemoteXPC）时失败。新增 `tunnel_agent_alive()`
+    （探 `http://127.0.0.1:28100/health`）、`wait_tunnel_ready()`（探 `/ready`）、
+    `ensure_tunnel()`（不在就后台拉起 `ios tunnel start [--userspace]`）；
+    `start_wda(start_tunnel=)` 默认 True，`USBClient(start_tunnel=, tunnel_mode=)`。
+    kernel 模式需管理员/sudo；Windows 无管理员时用 `tunnel_mode="userspace"`
+    （需 wintun.dll 在 `C:/Windows/system32`）。起隧道失败不阻断，只警告。
+* fix: 设备激活第二步的 Command 现在**两个名字都试**——go-ios 用
+  `CreateActivationInfoRequest`，pymobiledevice3 用 `CreateTunnel1ActivationInfoRequest`，
+  不同 iOS 版本认的命令不同。先试 Tunnel1，被拒再回退，两个都失败才报 `ActivationError`。
+* CLI: 新增 `wda_start.py`（等价 `python -m wdap.wda_launch`），
+  支持 `--mount-image` / `--tunnel-mode` / `--no-tunnel` / `--tunnel-host` / `--tunnel-port`。
+* 自检: `verify_wda_launch.py` 44 项（假 .bat 可执行文件模拟成功/立即退出/找不到工具/
+  回退切换，新增 8 项隧道探测与接线用例），`verify_activation.py` 16 项
+  （新增命令回退与全拒用例）。
+
+0.2.4
+-----
+
+* feat: **内建 usbmux 本地端口转发 `wdap.usbmux.UsbmuxPortForwarder`**，把
+  `设备:port` 映射为 `http://127.0.0.1:<随机端口>`，纯标准库、不依赖 go-ios/tidevice。
+  之所以是"根本修复"而不是再打补丁，是因为旧的 `http+usbmux` 直连通道有三个结构性缺陷：
+  1. **每请求建隧道**：`http_create()` 每条 HTTP 请求都要 `select_device()`（内部
+     `create_mux()` 开 2 条 usbmuxd 连接）+ `MuxDevice.connect()`（再开 2 条），
+     一秒内多次请求（`is_ready` 重试、`wait_ready` 轮询、`session_id` 探测）会把
+     usbmuxd（Windows 上是 Apple Mobile Device Service）的连接数推高到上限，
+     之后新隧道被 RST → `WinError 10054 远程主机强迫关闭了一个现有的连接`；
+  2. **无连接复用**：keep-alive 完全用不上；
+  3. **无超时**：`USBMuxHTTPConnection` 不理会 `HTTPConnection.timeout`，
+     而 `fetch()` 里 `conn.timeout = timeout` 又是在 socket 建好之后才赋值，等于没设。
+* feat: **HTTP 连接池**。`fetch()` 现在按 `scheme://netloc` 复用连接（keep-alive），
+  新增 `POOL_ENABLED` / `POOL_MAX_IDLE_PER_URL` / `POOL_IDLE_TTL` 与 `close_pool()`。
+  实测：**2 条 HTTP 请求 → 1 条 TCP 连接 → 1 条 usbmux 隧道**（此前是 2 条隧道、
+  8 条 usbmuxd 连接）。设 `POOL_ENABLED=False` 可退回旧行为。
+* feat: `USBClient(transport=...)`，默认 `"auto"`（优先内建转发，不可用时回退
+  `http+usbmux`）；也可显式 `"forward"` / `"usbmux"`。新增 `USBClient.disconnect()`
+  释放转发端口与池中连接。
+* fix: `USBMuxHTTPConnection.connect()` 现在会把 `HTTPConnection.timeout` 真正作用到
+  socket 上，并开启 `TCP_NODELAY`——此前超时形同虚设，WDA 卡住时读写会无限期阻塞。
+* fix: 统一 `MuxError` / `MuxConnectError` 的定义。此前 `wdap.exceptions` 与
+  `wdap.usbmux.exceptions` 各定义了一份同名类，而 `wdap.MuxConnectError` 指向的那份
+  **运行时永远不会被抛出**，导致 `except wdap.MuxConnectError` 抓不到真实异常。
+  现在顶层名字统一指向真正会抛出的那份。
+* diagnose: `diagnose_wda.py` 新增"**对照组**"——用同一条中继去连 lockdown(62078)，
+  把「中继通道坏了」和「目标端口没服务」彻底分开；并新增第 4 步直接测内建转发。
+  两者组合可对"WDA 在跑但连不上"下确定论。
+* feat: **设备激活（仅 USB）**。`wdap.lockdown` + `wdap.activation` 用纯标准库实现了
+  对标 go-ios `ios activate` 的完整流程：usbmux 连 lockdown(62078) -> `StartSession`
+  （双向 TLS，客户端证书取自配对记录）-> `StartService(com.apple.mobileactivationd)`
+  -> `CreateTunnel1SessionInfoRequest` / `CreateActivationInfoRequest` /
+  `HandleActivationInfoWithSessionRequest`，中间把 handshake 与 activation-info 转发到
+  `albert.apple.com`。未嵌入 go-ios / tidevice，可安全打进 ipa。
+  API：`wdap.activation_state()` / `wdap.is_device_activated()` /
+  `wdap.activate_device()` / `wdap.activate_all_usb_devices()`；
+  CLI：`python activate_ios.py --list|--state|--all [--proxy ...]`。
+  已激活的设备调用后直接返回，可安全重复执行。
+* feat: **WDA 运行日志接口 `client.log`**（对应服务端 `/wda/log/*` 的 7 个端点）。
+  `recent` / `errors` / `stats` / `crash` / `download` / `save` / `clear` / `config`，
+  另加 `available()` 能力探测与 `follow()` 增量跟随（按 `seq` 推进 `since` 轮询）。
+  排查"端口还在但没反应""跑一小时整个 WDA 掉了"这类事后看不见的问题时用它。
+  两个服务端契约已在客户端固化：
+  1. 路由是 `withoutSession` + `standalone`，路径**不带** `/session/:id` 前缀
+     （一律走 `client.http`），并且绕开共享路由队列——所以队列卡死时也问得到；
+  2. **GET 的参数也要放在 JSON body**：服务端 `FBWebServer` 只做
+     `JSONObjectWithData:request.body`，`?limit=10` 这种 query **完全不生效**。
+  参数侧提前拦截服务端的静默行为：`limit` 超出 1..20000 会被 clamp、`level` 写错会被
+  静默当成 `info`，本地一律抛 `ValueError`；`category` 是纯字符串，服务端允许新分类，
+  故不校验。`/wda/log/download` 返回 `text/plain`，为此给 `BaseClient` 增加
+  `_fetch_raw()`（不再经 `_unsafe_httpdo` 的 `response.json()`）与 `wda_url` 属性。
+  路由不存在（旧 WDA）时抛 `LogUnsupportedError`，`available()` 返回 False。
+
+0.2.3
+-----
+
+* fix: **纠正"隧道被 RST"的误判**。0.2.2 把 `ConnectionResetError(10054)` /
+  `ConnectionAbortedError(10053)` 一律归为"瞬态错误"，于是一次**持续**的重置仍被当成
+  "WDA 没启动"，继续徒劳地调 `tidevice xctest`（iOS 17+ 必然失败）并刷屏。
+  现在改为**自证式判定**：隧道被 RST 时先探一次 usbmuxd 控制通道（`list_devices`）——
+  控制通道正常 → 说明只是"设备上那个端口连不上"，值得激活；
+  控制通道也不通 → 判定为 usbmux 通道级故障，直接报错、不再徒劳激活
+* fix: `_explain_probe_error` 对 RST 不再谎称"瞬态错误"，改为列出真实诱因
+  （端口无监听 / usbmuxd 被其它工具争用 / USB 连接不稳）
+* perf: `select_device()` 结果增加短 TTL 缓存（`wdap.usbmux.DEVICE_CACHE_TTL`，默认 2s，
+  设 0 关闭）。`create_mux()` 每次要连 usbmuxd 两次（版本探测 + 建会话），而
+  `http_create()` 每个请求都要重新解析一遍设备，等于**每个 HTTP 请求向 usbmuxd 开 4 条连接**；
+  缓存后降到 2 条，显著降低连接 churn（churn 本身是一类"跑一会就开始被 RST"的诱因）。
+  连接层异常时缓存立即作废，设备重插/换口可快速恢复
+* feat: `diagnose_wda.py` 升级为分层自证诊断
+  * 第 0 层：检查 tidevice / ios.exe / iTunes 等是否在争用 usbmux，并查 AMDS 服务状态
+  * 第 3 层拆成 3b `create_mux()` / 3c `Connect` 命令 / 3d 隧道上跑原始 HTTP，且**重复多次**
+    —— "一次成功一次失败"即可判定为 churn/争用，而不是通道彻底坏掉
+  * 末尾给出不依赖 usbmux 的替代路径（WiFi 直连、`ios forward`）
+
+0.2.2
+-----
+
+* feat(cv): 新增 16 个图像接口，CV 端点从 9 个扩到 25 个
+  * OpenCV: `wait_for_stable` / `match_features` / `match_templates` / `compare` /
+    `preprocess` / `edges`
+  * Vision: `barcode` / `rectangles` / `saliency` / `faces` / `humans` / `classify` /
+    `contours` / `document` / `text_rectangles` / `align`
+* fix(usbmux): **修复长跑后 `WinError 10054 远程主机强迫关闭了一个现有的连接`**。
+  `usbmux.fetch()` 每次请求都会新建一条连接（`http+usbmux` 下是一条 usbmux 隧道），
+  但读完响应后从 `conn.close()`，只靠 GC 回收。隧道/句柄持续累积，设备端 HTTP 服务或
+  usbmuxd 达到并发上限后就会 RST 新连接。现在用 `finally` 保证任何路径都关闭连接；
+  由于异常对象持有 traceback（→ 持有栈帧 → 持有 `conn`），上层若把异常存下来，
+  不关闭会导致该隧道永久泄漏
+* fix: `_unsafe_httpdo` 增加传输层瞬态错误自动重试。捕获
+  `ConnectionResetError` / `ConnectionAbortedError` / `BrokenPipeError` /
+  `TimeoutError` / `RemoteDisconnected` / `BadStatusLine` / `ResponseNotReady`
+  以及 usbmux 用 `HTTPError(args[0])` 包装后的同类错误，丢弃旧连接重建后重试。
+  默认只对幂等方法（GET/HEAD/OPTIONS/DELETE）重试，避免点击/输入等 POST 动作被重复执行；
+  设备消失（`MuxConnectError`）与 WDA 业务错误不重试，仍按原样抛出
+* feat: 新增配置开关 `HTTP_TRANSPORT_TRIES`（默认 2）、`HTTP_TRANSPORT_RETRY_DELAY`
+  （默认 0.5s）、`HTTP_TRANSPORT_RETRY_ON_POST`（默认 False）
+* fix: **修复"设备上 WDA 明明在跑，`USBClient()` 却判定 WDA 没启动"**。
+  `is_ready()` 用 `except Exception: return False` 把所有失败原因吞掉，且只探测一次，
+  usbmux 隧道首次建连慢或一次瞬时 RST 都会被误判成"WDA 没启动"；随后 `USBClient`
+  又无条件调用 `tidevice xctest`——这在 iOS 17+ 必然失败
+  （`DeveloperServiceError: DeveloperImage not found`），徒增噪音与 usbmuxd 压力。
+  现在：
+  * 新增 `BaseClient.probe()`，返回 `(ok, value_or_exception)`，不再丢原因
+  * `is_ready()` 新增 `timeout` / `tries` / `delay` 参数（默认值与旧行为一致），
+    可对瞬态失败重试
+  * `wait_ready()` 超时结束时打印最后一次失败原因，不再只有一句 "device still offline"
+  * 新增 `_explain_probe_error()`，把 usbmuxd 不可达 / 中继被拒（设备 8100 无监听）/
+    设备未枚举 / 隧道被重置等区分开
+  * `USBClient()` 新增 `auto_activate`（默认 True）、`activate_timeout`、
+    `probe_tries`、`probe_timeout` 参数。探测失败会先记录**真实原因**；
+    若是设备/usbmuxd 通道本身的问题则直接报错（启动 WDA 也救不了），
+    不再做徒劳激活；报错信息含 iOS 17+ 的处置提示
+  * `_start_wda_xctest()` 的子进程输出改为写入
+    `%TEMP%/wdap_tidevice_xctest.log`，失败时只在日志里给一行摘要 + 日志路径，
+    不再让整段 tidevice traceback 刷屏盖掉真正的报错
+* feat: 新增 `diagnose_wda.py`——逐层诊断脚本，定位
+  "WDA 在跑但探测失败"卡在哪一层（usbmuxd → 设备枚举 → 中继 → http+usbmux → 本机转发）
+
 0.2.1
 -----
 

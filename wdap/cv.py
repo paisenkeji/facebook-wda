@@ -2,20 +2,42 @@
 """
 OpenCV + Vision 图像/文字识别接口封装
 
-对应 WDA 分支 wda_cv_vision（基于 WebDriverAgent v16.12.3）新增的 9 个端点，
+对应 WDA 分支 wda_cv_vision（基于 WebDriverAgent v16.12.3）新增的 25 个端点，
 实现见服务端 ``WebDriverAgentLib/Commands/FBVisionCommands.m``。
 
-端点一览::
+端点一览（基础 9 个）::
 
-    GET  /wda/cv/status          能力探测（无需 session）
-    POST /wda/cv/snapshot        取截图，用于制作模板图
-    POST /wda/vision/ocr         全屏文字识别
-    POST /wda/vision/findText    按文字查找 + 可选点击
-    POST /wda/vision/waitForText 轮询等待文字出现
-    POST /wda/cv/matchImage      模板匹配找图 + 可选点击
-    POST /wda/cv/waitForImage    轮询等待图片出现
-    POST /wda/cv/findColor       找色 + 可选点击
-    POST /wda/cv/waitForColor    轮询等待颜色出现
+    GET  /wda/cv/status           能力探测（无需 session）
+    POST /wda/cv/snapshot         取截图，用于制作模板图
+    POST /wda/vision/ocr          全屏文字识别
+    POST /wda/vision/findText     按文字查找 + 可选点击
+    POST /wda/vision/waitForText  轮询等待文字出现（standalone）
+    POST /wda/cv/matchImage       模板匹配找图 + 可选点击
+    POST /wda/cv/waitForImage     轮询等待图片出现（standalone）
+    POST /wda/cv/findColor        找色 + 可选点击
+    POST /wda/cv/waitForColor     轮询等待颜色出现（standalone）
+
+高级 OpenCV 6 个::
+
+    POST /wda/cv/waitForStable    轮询等待页面静止（standalone）
+    POST /wda/cv/matchFeatures    ORB/AKAZE/BRISK 特征匹配（抗旋转/缩放）
+    POST /wda/cv/matchTemplates   多模板批量匹配（结果带 templateIndex）
+    POST /wda/cv/compare          两帧差异对比（间隔截图或离线两图）
+    POST /wda/cv/preprocess       OCR 预处理流水线（可顺带 OCR 并反算坐标）
+    POST /wda/cv/edges            Canny 边缘 + 轮廓外接框
+
+Vision 高级 10 个::
+
+    POST /wda/vision/barcode      条码 / 二维码识别
+    POST /wda/vision/rectangles   矩形区域检测
+    POST /wda/vision/saliency     显著区域检测
+    POST /wda/vision/faces        人脸检测（含特征点）
+    POST /wda/vision/humans       人体检测
+    POST /wda/vision/classify     图像内容分类（identifier 标签）
+    POST /wda/vision/contours     轮廓检测
+    POST /wda/vision/document     文档（四边形物体）检测
+    POST /wda/vision/textRectangles 文字区域检测（不做识别，更快）
+    POST /wda/vision/align        与参考图对齐（屏幕位移检测）
 
 坐标系约定（与服务端一致）：
 
@@ -32,6 +54,13 @@ OpenCV + Vision 图像/文字识别接口封装
 - ``region`` 的 width / height 必须为正，服务端**不会**退化成整屏而是直接报错；
 - ``taps`` 会被 clamp 到 1..3，``timeout`` 上限 60s、``interval`` 上限 5s；
 - ``ocr`` 不走通用点击逻辑，没有 tap 能力——要点文字请用 ``find_text``。
+
+除 ``ocr`` 与旧 ``snapshot`` 外，自 ``match_features`` 起的**全部高级接口**
+（含 10 个 vision 系列）都支持 ``image`` 参数：传入 base64 图片 / 本地路径 /
+PIL.Image 等（任意 :func:`_to_base64` 接受的形式）后，服务端就不再实时截图，
+改用你给的图分析——便于离线调试与对账；不给该参数则照常截当前屏幕。
+查找类接口（走 ``respondForMatches`` 的，含 vision 系列）仍带
+``index`` / ``tap`` / ``duration`` / ``taps`` / ``debug`` 点击与标注能力。
 
 典型用法::
 
@@ -65,12 +94,18 @@ __all__ = [
     "CVResult",
     "CVMatch",
     "CVStatus",
+    "CVCompareResult",
+    "CVPreprocessResult",
+    "CVAlignResult",
     "Point",
     "Region",
     "CVMatchMode",
     "CVColorSpace",
     "CVMatchMethod",
     "CVLevel",
+    "CVDetector",
+    "CVSaliencyMode",
+    "CVPreprocessOption",
 ]
 
 Point = NamedTuple("Point", [("x", float), ("y", float)])
@@ -119,6 +154,83 @@ class CVLevel:
     ACCURATE = "accurate"
 
     ALL = ("fast", "accurate")
+
+
+class CVDetector:
+    """matchFeatures 的局部特征检测器"""
+    ORB = "orb"
+    AKAZE = "akaze"
+    BRISK = "brisk"
+
+    ALL = ("orb", "akaze", "brisk")
+
+
+class CVSaliencyMode:
+    """saliency 的显著图类型"""
+    OBJECTNESS = "objectness"
+    ATTENTION = "attention"
+
+    ALL = ("objectness", "attention")
+
+
+class CVPreprocessOption:
+    """preprocess 的图像处理流水线选项（位掩码，可任意组合后相加）
+
+    服务端既接受整数位掩码，也接受逗号分隔字符串或字符串数组，名称
+    （不分大小写）为：``grayscale``/``gray``、``binarize``/``binary``、
+    ``denoise``、``sharpen``、``equalize``、``morphology``、``invert``、
+    ``rescale``。完全不传时服务端默认 ``grayscale | binarize``。
+    """
+    NONE = 0
+    GRAYSCALE = 1 << 0
+    BINARIZE = 1 << 1
+    DENOISE = 1 << 2
+    SHARPEN = 1 << 3
+    EQUALIZE = 1 << 4
+    MORPHOLOGY = 1 << 5
+    INVERT = 1 << 6
+    RESCALE = 1 << 7
+
+    #: 名称（含别名）→ 位
+    _ALIASES = {
+        "grayscale": GRAYSCALE, "gray": GRAYSCALE,
+        "binarize": BINARIZE, "binary": BINARIZE,
+        "denoise": DENOISE, "sharpen": SHARPEN,
+        "equalize": EQUALIZE, "morphology": MORPHOLOGY,
+        "invert": INVERT, "rescale": RESCALE,
+    }
+
+
+def _normalize_preprocess_options(options) -> Optional[int]:
+    """把 ``options`` 归一成服务端接受的整数位掩码
+
+    Args:
+        options: ``None``（不发送，服务端默认灰度+二值化）
+                 / 整数位掩码 / 逗号分隔字符串 / 名称列表
+    """
+    if options is None:
+        return None
+    if isinstance(options, bool) or not isinstance(options, (int, str, list, tuple)):
+        raise TypeError(
+            "options must be None, an int bitmask, a comma separated string "
+            "or a list of option names, got %r" % (options,))
+    if isinstance(options, int):
+        if not 0 <= options <= 0xFF:
+            raise ValueError("options bitmask must be in 0..0xFF, got %r" % options)
+        return options
+    if isinstance(options, str):
+        items = [name for name in (t.strip().lower() for t in options.split(",")) if name]
+    else:
+        items = [str(name).strip().lower() for name in options]
+    value = 0
+    for name in items:
+        bit = CVPreprocessOption._ALIASES.get(name)
+        if bit is None:
+            raise ValueError(
+                "unknown preprocess option %r, expected one of %s"
+                % (name, sorted(set(CVPreprocessOption._ALIASES))))
+        value |= bit
+    return value if value else None
 
 
 def _check_choice(name: str, value: Optional[str], choices: Sequence[str]) -> Optional[str]:
@@ -379,6 +491,52 @@ class CVMatch(object):
         """这一条是否被点击过"""
         return bool(self._raw.get("tapped", False))
 
+    # --- matchFeatures / matchTemplates / vision 系列的额外字段 ---
+    @property
+    def vision_type(self) -> Optional[str]:
+        """vision 观测类型：barcode / rect / saliency / face / human /
+        label（classify）/ contour / document / textRect / align"""
+        return self._raw.get("type")
+
+    @property
+    def info(self) -> Dict[str, Any]:
+        """vision 观测的额外细节（原样透传），具体字段见各接口 docstring"""
+        return self._raw.get("info") or {}
+
+    @property
+    def template_index(self) -> Optional[int]:
+        """matchTemplates：这条命中属于第几个模板"""
+        value = self._raw.get("templateIndex")
+        return None if value is None else int(value)
+
+    @property
+    def angle(self) -> Optional[float]:
+        """matchFeatures：模板在画面中的旋转角（度）"""
+        value = self._raw.get("angle")
+        return None if value is None else float(value)
+
+    @property
+    def inliers(self) -> Optional[int]:
+        """matchFeatures：与推算变换一致的关键点对数量"""
+        value = self._raw.get("inliers")
+        return None if value is None else int(value)
+
+    @property
+    def feature_matches(self) -> Optional[int]:
+        """matchFeatures：通过描述子距离过滤的关键点对数量"""
+        value = self._raw.get("matches")
+        return None if value is None else int(value)
+
+    @property
+    def corners(self) -> List[Point]:
+        """matchFeatures：命中模板的四角，像素坐标，顺序
+        topLeft → topRight → bottomRight → bottomLeft"""
+        points = []
+        for item in self._raw.get("corners") or []:
+            points.append(Point(float(item.get("x", 0.0)),
+                                float(item.get("y", 0.0))))
+        return points
+
     def __repr__(self):
         if self.text is not None:
             return "<CVMatch text=%r center=(%.1f, %.1f) confidence=%s>" % (
@@ -413,9 +571,33 @@ class CVStatus(object):
         return self._raw.get("opencvVersion") or ""
 
     @property
+    def memory_footprint_mb(self) -> float:
+        """WDA 进程的物理内存占用（MB），旧版服务端没有该字段时返回 0.0
+
+        反复采样这个值可以判断服务端是否在泄漏内存：比如连续调用
+        wait_* 轮询接口时，若该值单调上升且不回落，说明截图没有被释放。
+        """
+        return float(self._raw.get("memoryFootprintMB", 0.0) or 0.0)
+
+    @property
     def scale(self) -> float:
         """设备屏幕缩放比（像素 / 逻辑点）"""
         return float(self._raw.get("scale", 1.0))
+
+    @property
+    def features(self) -> Dict[str, Any]:
+        """Vision 高级能力可用性映射（随系统版本变化），如 ``{"faces": True, ...}``"""
+        return dict(self._raw.get("features") or {})
+
+    @property
+    def cv_features(self) -> List[str]:
+        """当前构建里可用的 OpenCV 端点名列表"""
+        return list(self._raw.get("cvFeatures") or [])
+
+    @property
+    def vision_features(self) -> List[str]:
+        """当前构建里可用的 Vision 端点名列表"""
+        return list(self._raw.get("visionFeatures") or [])
 
     @property
     def available(self) -> bool:
@@ -541,6 +723,224 @@ class CVResult(object):
     def __repr__(self):
         return ("<CVResult found=%s count=%d scale=%s waited=%s>" % (
             self.found, self.count, self.scale, self.waited))
+
+
+class CVCompareResult(object):
+    """``compare`` / ``wait_for_stable`` 的返回：两帧差异对比结果
+
+    - ``stable``: 是否"没有显著变化"（changed_ratio 不超过阈值）
+    - ``changed_ratio``: 变化像素占比 0..1
+    - ``diff_rect`` / ``diff_rects``: 变化区域（像素坐标），无变化为 None / []
+    """
+
+    def __init__(self, value: Union[Dict[str, Any], Any]):
+        self._raw = dict(value or {})
+
+    @property
+    def raw(self) -> Dict[str, Any]:
+        return self._raw
+
+    @property
+    def changed_ratio(self) -> float:
+        """变化像素占比 0..1"""
+        return float(self._raw.get("changedRatio", 0.0))
+
+    @property
+    def mean_diff(self) -> float:
+        """像素平均绝对差 0..255"""
+        return float(self._raw.get("meanDiff", 0.0))
+
+    @property
+    def max_diff(self) -> float:
+        """像素最大绝对差 0..255"""
+        return float(self._raw.get("maxDiff", 0.0))
+
+    @property
+    def hist_distance(self) -> float:
+        """亮度直方图距离 0..1"""
+        return float(self._raw.get("histDistance", 0.0))
+
+    @property
+    def stable(self) -> bool:
+        """画面是否已稳定（compare 指两图基本相同）"""
+        return bool(self._raw.get("stable", False))
+
+    @property
+    def found(self) -> bool:
+        """wait_for_stable 的 found（= 页面已静止）；compare 等价于 stable"""
+        return bool(self._raw.get("found", self.stable))
+
+    @property
+    def diff_rect(self) -> Optional[Rect]:
+        """变化区域外接矩形（像素坐标），无变化为 None"""
+        r = self._raw.get("diffRect")
+        if not r or not isinstance(r, dict):
+            return None
+        return Rect(float(r.get("x", 0.0)), float(r.get("y", 0.0)),
+                    float(r.get("width", 0.0)), float(r.get("height", 0.0)))
+
+    @property
+    def diff_rects(self) -> List[Rect]:
+        """变化连通块的外接矩形列表（按面积降序）"""
+        rects = []
+        for r in self._raw.get("diffRects") or []:
+            if isinstance(r, dict):
+                rects.append(Rect(float(r.get("x", 0.0)), float(r.get("y", 0.0)),
+                                  float(r.get("width", 0.0)), float(r.get("height", 0.0))))
+        return rects
+
+    @property
+    def scale(self) -> float:
+        return float(self._raw.get("scale", 1.0))
+
+    @property
+    def image_size(self) -> Tuple[float, float]:
+        size = self._raw.get("imageSize") or {}
+        return (float(size.get("width", 0.0)), float(size.get("height", 0.0)))
+
+    @property
+    def waited(self) -> Optional[float]:
+        """实际等待毫秒数（仅 wait_for_stable 有）"""
+        value = self._raw.get("waited")
+        return None if value is None else float(value)
+
+    @property
+    def threshold(self) -> Optional[float]:
+        """判定静止的变化比阈值（仅 wait_for_stable 返回）"""
+        value = self._raw.get("threshold")
+        return None if value is None else float(value)
+
+    @property
+    def debug_image(self) -> Optional[bytes]:
+        """debug=True 时的标注图（JPEG 二进制），否则 None"""
+        data = self._raw.get("debugImage")
+        if not data:
+            return None
+        return base64.b64decode(data)
+
+    def save_debug_image(self, path: str) -> bool:
+        data = self.debug_image
+        if not data:
+            return False
+        with open(path, "wb") as fp:
+            fp.write(data)
+        return True
+
+    def __bool__(self):
+        return self.found
+
+    def __repr__(self):
+        return ("<CVCompareResult stable=%s changed=%.3f diffRects=%d waited=%s>" % (
+            self.stable, self.changed_ratio, len(self.diff_rects), self.waited))
+
+
+class CVPreprocessResult(object):
+    """``preprocess`` 的返回：预处理后的图片（+ 可选的 OCR 结果）"""
+
+    def __init__(self, value: Union[Dict[str, Any], Any]):
+        self._raw = dict(value or {})
+        self._ocr = None
+        if "results" in self._raw:
+            self._ocr = CVResult(self._raw)
+
+    @property
+    def raw(self) -> Dict[str, Any]:
+        return self._raw
+
+    @property
+    def data(self) -> bytes:
+        """预处理结果的 PNG 二进制"""
+        return base64.b64decode(self._raw.get("data") or "")
+
+    def save(self, path: str) -> bool:
+        """保存预处理结果图，返回是否成功"""
+        data = self._raw.get("data")
+        if not data:
+            return False
+        with open(path, "wb") as fp:
+            fp.write(base64.b64decode(data))
+        return True
+
+    @property
+    def options(self) -> int:
+        """实际应用的预处理选项（位掩码），见 :class:`CVPreprocessOption`"""
+        return int(self._raw.get("options", 0))
+
+    @property
+    def image_size(self) -> Tuple[float, float]:
+        size = self._raw.get("imageSize") or {}
+        return (float(size.get("width", 0.0)), float(size.get("height", 0.0)))
+
+    @property
+    def returned_size(self) -> Tuple[float, float]:
+        size = self._raw.get("returnedSize") or {}
+        return (float(size.get("width", 0.0)), float(size.get("height", 0.0)))
+
+    @property
+    def ocr(self) -> Optional[CVResult]:
+        """ocr=True 时对处理后图识别的文字结果（坐标已反算回原图），否则 None"""
+        return self._ocr
+
+    def __repr__(self):
+        return ("<CVPreprocessResult size=%sx%s options=0x%X ocr=%s>" % (
+            self.returned_size[0], self.returned_size[1], self.options,
+            None if self._ocr is None else "found=%s" % self._ocr.found))
+
+
+class CVAlignResult(object):
+    """``align`` 的返回：当前图相对参考图的仿射对齐结果
+
+    ``transform`` 是 [a, b, c, d, tx, ty] 六个数值，对应 CGAffineTransform
+    的 a/b/c/d/tx/ty —— 后两项 tx/ty 即近似平移量（像素）。齐次坐标
+    ``[x', y', 1] = [a c tx; b d ty; 0 0 1] * [x, y, 1]``。
+    """
+
+    def __init__(self, value: Union[Dict[str, Any], Any]):
+        self._raw = dict(value or {})
+        self._item = None
+        results = self._raw.get("results") or []
+        if results:
+            self._item = results[0] if isinstance(results[0], dict) else None
+
+    @property
+    def raw(self) -> Dict[str, Any]:
+        return self._raw
+
+    @property
+    def found(self) -> bool:
+        return bool(self._raw.get("found", False))
+
+    @property
+    def count(self) -> int:
+        return int(self._raw.get("count", 1 if self.found else 0))
+
+    @property
+    def info(self) -> Dict[str, Any]:
+        """对齐细节（含 transform）"""
+        if not self._item:
+            return {}
+        return self._item.get("info") or {}
+
+    @property
+    def transform(self) -> Optional[List[float]]:
+        """仿射矩阵 [a, b, c, d, tx, ty]，未对齐为 None"""
+        value = self.info.get("transform")
+        if not value:
+            return None
+        return [float(item) for item in value]
+
+    @property
+    def image_size(self) -> Tuple[float, float]:
+        if not self._item:
+            return (0.0, 0.0)
+        size = self._item.get("imageSize") or {}
+        return (float(size.get("width", 0.0)), float(size.get("height", 0.0)))
+
+    def __bool__(self):
+        return self.found
+
+    def __repr__(self):
+        return ("<CVAlignResult found=%s transform=%s>" % (self.found, self.transform))
 
 
 # --------------------------------------------------------------------------- #
@@ -686,13 +1086,26 @@ class CV(object):
             "maxResults": max_results,
         })
 
-    def _post(self, path: str, data: Dict[str, Any], timeout: Optional[float] = None) -> CVResult:
+    def _post_raw(self, path: str, data: Dict[str, Any],
+                  timeout: Optional[float] = None) -> Dict[str, Any]:
+        """POST 并返回原始响应 value（不包 CVResult），供自定义结构接口使用"""
         try:
-            value = self._client._session_http.post(path, data=data, timeout=timeout).value
+            return self._client._session_http.post(path, data=data,
+                                                   timeout=timeout).value
         except WDARequestError as err:
             _raise_if_unsupported(path, err)
             raise
-        return CVResult(value)
+
+    def _post(self, path: str, data: Dict[str, Any],
+              timeout: Optional[float] = None) -> CVResult:
+        return CVResult(self._post_raw(path, data, timeout=timeout))
+
+    @staticmethod
+    def _image_arg(image) -> Dict[str, Any]:
+        """可选的 ``image`` 参数：给了就编码成 base64，服务端不再实时截图"""
+        if image is None:
+            return {}
+        return {"image": _to_base64(image)}
 
     # ------------------------------------------------------------------ #
     # 1. 能力探测
@@ -1030,6 +1443,621 @@ class CV(object):
         data.update(self._wait(timeout, interval))
         return self._post("/wda/cv/waitForColor", data,
                           timeout=max(60.0, timeout / 1000.0 + 30.0))
+
+    # ------------------------------------------------------------------ #
+    # 10. waitForStable
+    # ------------------------------------------------------------------ #
+    def wait_for_stable(self,
+                        timeout: float = 5000,
+                        interval: float = 300,
+                        threshold: float = 0.005,
+                        pixel_threshold: Optional[float] = None,
+                        min_area: Optional[int] = None,
+                        max_results: Optional[int] = None,
+                        region: Optional[Union[dict, Sequence]] = None,
+                        debug: Optional[bool] = None) -> CVCompareResult:
+        """轮询等待页面静止（两帧变化比降到阈值以下），替代盲等 sleep
+
+        Args:
+            timeout: 最长等待毫秒，上限 60000，默认 5000
+            interval: 两次截图间隔毫秒，默认 300
+            threshold: 判定"已静止"的变化像素占比 0..1，默认 0.005
+            pixel_threshold: 判定单像素是否变化的通道差 0..255，
+                             缺省/负数 = 服务端自动阈值
+            min_area: 变化连通块最小像素面积，更小的忽略，默认 1
+            max_results: 最多报告几个变化块，默认 10
+            region: 只比较该像素区域
+            debug: 额外返回标注变化块的调试图
+
+        Returns:
+            CVCompareResult，页面静止时 ``found`` / ``stable`` 为 True
+
+        Example::
+
+            if c.cv.wait_for_stable(timeout=8000).stable:
+                print("页面已稳定")
+        """
+        if not 0.0 <= float(threshold) <= 1.0:
+            raise ValueError("threshold must be in 0..1, got %r" % threshold)
+        if pixel_threshold is not None and float(pixel_threshold) > 0 \
+                and float(pixel_threshold) > 255:
+            raise ValueError("pixel_threshold must be <= 255 or negative "
+                             "(auto), got %r" % pixel_threshold)
+        if min_area is not None and int(min_area) < 0:
+            raise ValueError("min_area must be >= 0, got %r" % min_area)
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        data = _clean({
+            "region": _normalize_region(region),
+            "threshold": threshold,
+            "pixelThreshold": pixel_threshold,
+            "minArea": min_area,
+            "maxResults": max_results,
+            "debug": debug,
+        })
+        data.update(self._wait(timeout, interval))
+        value = self._post_raw("/wda/cv/waitForStable", data,
+                               timeout=max(60.0, timeout / 1000.0 + 30.0))
+        return CVCompareResult(value)
+
+    # ------------------------------------------------------------------ #
+    # 11. matchFeatures
+    # ------------------------------------------------------------------ #
+    def match_features(self,
+                       template: Union[str, bytes, Any],
+                       image: Optional[Union[str, bytes, Any]] = None,
+                       detector: str = CVDetector.ORB,
+                       max_features: Optional[int] = None,
+                       good_match_ratio: Optional[float] = None,
+                       min_inliers: Optional[int] = None,
+                       max_results: Optional[int] = None,
+                       region: Optional[Union[dict, Sequence]] = None,
+                       index: Optional[int] = None,
+                       tap: Optional[bool] = None,
+                       duration: Optional[float] = None,
+                       taps: Optional[int] = None,
+                       debug: Optional[bool] = None) -> CVResult:
+        """特征点匹配找图（ORB/AKAZE/BRISK），抗旋转 / 中等缩放 / 透视
+
+        相比 :meth:`match_image` 的像素模板匹配，特征匹配能应对模板在画面里
+        旋转、缩放的情形，命中结果带 ``angle`` / ``scale`` / ``inliers`` /
+        ``corners``。
+
+        Args:
+            template: 模板图（文件路径 / bytes / base64 / PIL.Image / 文件对象）
+            image: 传了就分析这张图（任意 :func:`_to_base64` 接受的形式），
+                   否则实时截屏
+            detector: "orb"（默认）/ "akaze" / "brisk"
+            max_features: 每张图最多提取多少关键点，>=10，默认 1000
+            good_match_ratio: 保留的最佳关键点对比例 0..1；
+                              缺省或 <=0 = 服务端默认 0.2
+            min_inliers: 最少几何一致点对数（低于则丢弃），默认 10
+            max_results: 最多返回几个命中，默认 1
+            其余参数同 :meth:`match_image`
+
+        Returns:
+            CVResult，命中项可用 ``angle`` / ``inliers`` / ``feature_matches``
+            / ``corners`` 读取特征详情
+        """
+        det = _check_choice("detector", detector, CVDetector.ALL)
+        if max_features is not None and int(max_features) < 10:
+            raise ValueError("max_features must be >= 10, got %r" % max_features)
+        if good_match_ratio is not None:
+            if float(good_match_ratio) > 1.0:
+                raise ValueError("good_match_ratio must be <= 1.0 or <= 0 "
+                                 "for the server default, got %r" % good_match_ratio)
+        if min_inliers is not None and int(min_inliers) < 0:
+            raise ValueError("min_inliers must be >= 0, got %r" % min_inliers)
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        data = self._common(region=region, index=index, tap=tap,
+                            duration=duration, taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        data.update(_clean({
+            "template": _to_base64(template),
+            "detector": det,
+            "maxFeatures": max_features,
+            "goodMatchRatio": good_match_ratio,
+            "minInliers": min_inliers,
+            "maxResults": max_results,
+        }))
+        return self._post("/wda/cv/matchFeatures", data)
+
+    # ------------------------------------------------------------------ #
+    # 12. matchTemplates
+    # ------------------------------------------------------------------ #
+    def match_templates(self,
+                        templates: Sequence,
+                        image: Optional[Union[str, bytes, Any]] = None,
+                        threshold: Optional[float] = None,
+                        method: Optional[str] = None,
+                        max_results: Optional[int] = None,
+                        region: Optional[Union[dict, Sequence]] = None,
+                        scale_min: Optional[float] = None,
+                        scale_max: Optional[float] = None,
+                        scale_steps: Optional[int] = None,
+                        use_mask: Optional[bool] = None,
+                        index: Optional[int] = None,
+                        tap: Optional[bool] = None,
+                        duration: Optional[float] = None,
+                        taps: Optional[int] = None,
+                        debug: Optional[bool] = None) -> CVResult:
+        """一次提交多张模板批量匹配，结果按得分降序合并
+
+        每个命中的 ``template_index`` 标明属于第几张模板，其余匹配参数
+        与 :meth:`match_image` 完全一致（threshold / method / 多尺度 /
+        use_mask 等）。模板间允许不同尺寸；结果总数按每张模板的
+        ``max_results`` 合并。
+
+        Args:
+            templates: 非空模板列表，元素类型同 ``match_image`` 的 template
+            image: 同 :meth:`match_features`
+
+        Returns:
+            CVResult，命中项带 ``template_index``
+        """
+        if not templates:
+            raise ValueError("templates must be a non-empty list of images")
+        if threshold is not None and not 0.0 <= float(threshold) <= 1.0:
+            raise ValueError("threshold must be in 0..1, got %r" % threshold)
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        data = self._common(region=region, index=index, tap=tap,
+                            duration=duration, taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        data.update(_clean({
+            "templates": [_to_base64(item) for item in templates],
+            "threshold": threshold,
+            "method": _check_choice("method", method, CVMatchMethod.ALL),
+            "maxResults": max_results,
+            "scaleMin": scale_min,
+            "scaleMax": scale_max,
+            "scaleSteps": scale_steps,
+            "useMask": use_mask,
+        }))
+        return self._post("/wda/cv/matchTemplates", data)
+
+    # ------------------------------------------------------------------ #
+    # 13. compare
+    # ------------------------------------------------------------------ #
+    def compare(self,
+                first: Optional[Union[str, bytes, Any]] = None,
+                second: Optional[Union[str, bytes, Any]] = None,
+                interval: Optional[float] = None,
+                pixel_threshold: Optional[float] = None,
+                min_area: Optional[int] = None,
+                max_results: Optional[int] = None,
+                region: Optional[Union[dict, Sequence]] = None,
+                debug: Optional[bool] = None) -> CVCompareResult:
+        """对比两帧并报告差异区域
+
+        ``first`` / ``second`` 的取值决定服务端怎么取图：
+
+        - 两个都缺省：连截两张屏幕，间隔 ``interval`` 毫秒——用于自检页面是否变化；
+        - 只给 ``first``：第一帧用给的图，第二帧立即截图——与当前屏幕对比；
+        - 只给 ``second``：先截一张，等 ``interval`` 毫秒后再截一张与它对比……
+          实际服务端会先截第一帧、sleep ``interval``、再用你给的第二帧对比；
+        - 两个都给：纯离线对比两张图，不截图、不等待。
+
+        Args:
+            first / second: 任意 :func:`_to_base64` 接受的形式
+            interval: 毫秒，仅"需要现场截图两帧"时生效，上限 10000，默认 300
+            pixel_threshold: 判单像素变化的通道差 0..255，缺省/负数 = 自动
+            min_area: 变化块最小像素面积，默认 1
+            max_results: 最多报告几个变化块，默认 10
+            region: 只比较该像素区域
+            debug: 在 second 图上标注差异块并返回调试图
+
+        Returns:
+            CVCompareResult，``stable`` 为 True 表示两帧基本相同
+        """
+        if interval is not None:
+            if not 0 <= float(interval) <= 10000:
+                raise ValueError("interval must be in 0..10000 ms, got %r" % interval)
+        if pixel_threshold is not None and float(pixel_threshold) > 0 \
+                and float(pixel_threshold) > 255:
+            raise ValueError("pixel_threshold must be <= 255 or negative "
+                             "(auto), got %r" % pixel_threshold)
+        if min_area is not None and int(min_area) < 0:
+            raise ValueError("min_area must be >= 0, got %r" % min_area)
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        data = _clean({
+            "first": None if first is None else _to_base64(first),
+            "second": None if second is None else _to_base64(second),
+            "interval": interval,
+            "pixelThreshold": pixel_threshold,
+            "minArea": min_area,
+            "maxResults": max_results,
+            "region": _normalize_region(region),
+            "debug": debug,
+        })
+        data = _clean(data)
+        # 服务端可能现场截图 + sleep(interval)，留足 HTTP 余量
+        http_timeout = max(30.0, (interval or 0.0) / 1000.0 + 10.0) \
+            if (first is None or second is None) else None
+        value = self._post_raw("/wda/cv/compare", data, timeout=http_timeout)
+        return CVCompareResult(value)
+
+    # ------------------------------------------------------------------ #
+    # 14. preprocess
+    # ------------------------------------------------------------------ #
+    def preprocess(self,
+                   image: Optional[Union[str, bytes, Any]] = None,
+                   options: Optional[Union[int, str, Sequence]] = None,
+                   scale: Optional[float] = None,
+                   block_size: Optional[int] = None,
+                   constant: Optional[float] = None,
+                   ocr: bool = False,
+                   level: Optional[str] = None,
+                   languages: Optional[Sequence[str]] = None,
+                   language_correction: Optional[bool] = None,
+                   minimum_text_height: Optional[float] = None,
+                   char_boxes: Optional[bool] = None) -> CVPreprocessResult:
+        """对截图跑 OCR 预处理流水线，可顺带识别文字
+
+        低对比度 / 噪点画面直接 OCR 效果差时，先走本接口增强（灰度 →
+        自适应二值化 → 可选去噪/锐化/形态学等）再识别。
+
+        Args:
+            image: 传了就处理这张图，否则实时截屏
+            options: 预处理选项。None（默认灰度+二值化）/ 整数位掩码
+                     （:class:`CVPreprocessOption` 各值相加）/ 名称字符串或列表
+            scale: >0 时先按该倍率缩放（等价于附加 ``rescale`` 选项）
+            block_size: 自适应阈值的邻域像素尺寸，>=1 的奇数（服务端会圆整），
+                        缺省用服务端自适应值
+            constant: 自适应阈值减去的常数，默认 10
+            ocr: True 时对处理后的图做 OCR，返回结果坐标会反算回原图
+            level / languages / language_correction / minimum_text_height /
+            char_boxes: 仅 ocr=True 生效，含义同 :meth:`ocr`
+
+        Returns:
+            CVPreprocessResult，``save(path)`` 存处理结果图；
+            ``ocr=True`` 时 ``result.ocr`` 是文字识别结果（CVResult）
+        """
+        opts = _normalize_preprocess_options(options)
+        if scale is not None and float(scale) <= 0:
+            raise ValueError("scale must be > 0 (or None), got %r" % scale)
+        if block_size is not None:
+            block_size = int(block_size)
+            if block_size < 1:
+                raise ValueError("block_size must be >= 1, got %r" % block_size)
+        data = _clean({
+            "options": opts,
+            "scale": scale,
+            "blockSize": block_size,
+            "constant": constant,
+            "ocr": True if ocr else None,
+        })
+        data.update(self._image_arg(image))
+        if ocr:
+            data.update(self._text_common(level, languages, language_correction,
+                                          minimum_text_height, char_boxes))
+        value = self._post_raw("/wda/cv/preprocess", data)
+        return CVPreprocessResult(value)
+
+    # ------------------------------------------------------------------ #
+    # 15. edges
+    # ------------------------------------------------------------------ #
+    def edges(self,
+              image: Optional[Union[str, bytes, Any]] = None,
+              lower: Optional[float] = None,
+              upper: Optional[float] = None,
+              region: Optional[Union[dict, Sequence]] = None,
+              min_area: Optional[int] = None,
+              max_results: Optional[int] = None,
+              index: Optional[int] = None,
+              tap: Optional[bool] = None,
+              duration: Optional[float] = None,
+              taps: Optional[int] = None,
+              debug: Optional[bool] = None) -> CVResult:
+        """Canny 边缘检测 + 闭合轮廓外接框
+
+        用于找卡片 / 按钮 / 弹窗这类有明确边界的元素。结果按外接矩形
+        面积降序，每条结果带 ``rect``（轮廓外接框）与 ``score``。
+
+        Args:
+            image: 传了就分析这张图，否则实时截屏
+            lower / upper: Canny 滞后阈值 0..255，缺省/0 = 服务端自动推算
+            min_area: 闭合轮廓的最小像素面积，更小的忽略，默认 100
+            max_results: 最多返回几个，默认 10
+            其余参数同 :meth:`match_image`
+        """
+        for name, value in (("lower", lower), ("upper", upper)):
+            if value is not None and not 0.0 <= float(value) <= 255:
+                raise ValueError("%s must be in 0..255, got %r" % (name, value))
+        if min_area is not None and int(min_area) < 0:
+            raise ValueError("min_area must be >= 0, got %r" % min_area)
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        data = self._common(region=region, index=index, tap=tap,
+                            duration=duration, taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        data.update(_clean({
+            "lower": lower,
+            "upper": upper,
+            "minArea": min_area,
+            "maxResults": max_results,
+        }))
+        return self._post("/wda/cv/edges", data)
+
+    # ------------------------------------------------------------------ #
+    # 16. vision 系列（通用参数）
+    # ------------------------------------------------------------------ #
+    def barcode(self,
+                image: Optional[Union[str, bytes, Any]] = None,
+                symbologies: Optional[Union[str, Sequence[str]]] = None,
+                region: Optional[Union[dict, Sequence]] = None,
+                index: Optional[int] = None,
+                tap: Optional[bool] = None,
+                duration: Optional[float] = None,
+                taps: Optional[int] = None,
+                debug: Optional[bool] = None) -> CVResult:
+        """识别画面里的条码 / 二维码
+
+        Args:
+            image: 传了就分析这张图，否则实时截屏
+            symbologies: 限定码制，如 "QR" / ["QR", "EAN13"]；
+                         缺省识别全部已知码制
+            region: 只扫该像素区域
+            index / tap / ...: 命中第 index 个时点击
+
+        Returns:
+            CVResult，命中项 ``vision_type == "barcode"``，
+            ``info`` 含 ``symbology``（码制）/ ``corners``（四角）/
+            ``payload``（内容）
+        """
+        if isinstance(symbologies, str):
+            symbologies = [symbologies]
+        if symbologies is not None and not symbologies:
+            raise ValueError("symbologies must not be empty")
+        data = self._common(region=region, index=index, tap=tap,
+                            duration=duration, taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        if symbologies is not None:
+            data["symbologies"] = [str(item) for item in symbologies]
+        return self._post("/wda/vision/barcode", data)
+
+    def rectangles(self,
+                   image: Optional[Union[str, bytes, Any]] = None,
+                   min_aspect: Optional[float] = None,
+                   max_aspect: Optional[float] = None,
+                   min_size: Optional[float] = None,
+                   quadrature_tolerance: Optional[float] = None,
+                   max_results: Optional[int] = None,
+                   region: Optional[Union[dict, Sequence]] = None,
+                   index: Optional[int] = None,
+                   tap: Optional[bool] = None,
+                   duration: Optional[float] = None,
+                   taps: Optional[int] = None,
+                   debug: Optional[bool] = None) -> CVResult:
+        """检测画面中的矩形区域（卡片 / 弹窗 / 屏幕等）
+
+        Args:
+            image: 传了就分析这张图，否则实时截屏
+            min_aspect / max_aspect: 宽高比过滤范围，缺省不限制
+            min_size: 最小边长占比 0..1（相对整图），缺省不限制
+            quadrature_tolerance: 四角偏离直角的容忍度（度）0..90，默认 30
+            max_results: 最多返回几个（按面积降序），默认 10
+            region: 只在该像素区域内找
+
+        Returns:
+            CVResult，命中项 ``info`` 含四角 ``corners``
+        """
+        if min_size is not None and not 0.0 <= float(min_size) <= 1.0:
+            raise ValueError("min_size must be in 0..1 (relative to the image), "
+                             "got %r" % min_size)
+        if quadrature_tolerance is not None \
+                and not 0.0 <= float(quadrature_tolerance) <= 90.0:
+            raise ValueError("quadrature_tolerance must be in 0..90, got %r"
+                             % quadrature_tolerance)
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        data = self._common(region=region, index=index, tap=tap,
+                            duration=duration, taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        data.update(_clean({
+            "minAspect": min_aspect,
+            "maxAspect": max_aspect,
+            "minSize": min_size,
+            "quadratureTolerance": quadrature_tolerance,
+            "maxResults": max_results,
+        }))
+        return self._post("/wda/vision/rectangles", data)
+
+    def saliency(self,
+                 image: Optional[Union[str, bytes, Any]] = None,
+                 mode: str = CVSaliencyMode.OBJECTNESS,
+                 max_results: Optional[int] = None,
+                 index: Optional[int] = None,
+                 tap: Optional[bool] = None,
+                 duration: Optional[float] = None,
+                 taps: Optional[int] = None,
+                 debug: Optional[bool] = None) -> CVResult:
+        """检测画面显著区域（哪块最抓眼球 / 最像前景物体）
+
+        Args:
+            image: 传了就分析这张图，否则实时截屏
+            mode: "objectness"（前景物体，默认）/ "attention"（注意力）
+            max_results: 最多返回几个，默认 3
+        """
+        md = _check_choice("mode", mode, CVSaliencyMode.ALL)
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        data = self._common(index=index, tap=tap, duration=duration,
+                            taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        data.update(_clean({"mode": md, "maxResults": max_results}))
+        return self._post("/wda/vision/saliency", data)
+
+    def faces(self,
+              image: Optional[Union[str, bytes, Any]] = None,
+              landmarks: Optional[bool] = None,
+              max_results: Optional[int] = None,
+              region: Optional[Union[dict, Sequence]] = None,
+              index: Optional[int] = None,
+              tap: Optional[bool] = None,
+              duration: Optional[float] = None,
+              taps: Optional[int] = None,
+              debug: Optional[bool] = None) -> CVResult:
+        """人脸检测
+
+        Args:
+            image: 传了就分析这张图，否则实时截屏
+            landmarks: 是否收集五官特征点，默认 True（较慢，可关掉提速）
+            max_results: 最多返回几个，默认 10
+            region: 只在该像素区域内找
+
+        Returns:
+            CVResult，命中项 ``vision_type == "face"``；``landmarks=True`` 时
+            ``info["landmarks"]`` 含 allPoints / faceContour / leftEye /
+            rightEye / nose / outerLips / innerLips 等特征点（归一化坐标）
+        """
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        data = self._common(region=region, index=index, tap=tap,
+                            duration=duration, taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        data.update(_clean({"landmarks": landmarks, "maxResults": max_results}))
+        return self._post("/wda/vision/faces", data)
+
+    def humans(self,
+               image: Optional[Union[str, bytes, Any]] = None,
+               max_results: Optional[int] = None,
+               region: Optional[Union[dict, Sequence]] = None,
+               index: Optional[int] = None,
+               tap: Optional[bool] = None,
+               duration: Optional[float] = None,
+               taps: Optional[int] = None,
+               debug: Optional[bool] = None) -> CVResult:
+        """人体检测（整身框）
+
+        Args:
+            image: 传了就分析这张图，否则实时截屏
+            max_results: 最多返回几个，默认 10
+            region: 只在该像素区域内找
+        """
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        data = self._common(region=region, index=index, tap=tap,
+                            duration=duration, taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        data.update(_clean({"maxResults": max_results}))
+        return self._post("/wda/vision/humans", data)
+
+    def classify(self,
+                 image: Optional[Union[str, bytes, Any]] = None,
+                 max_results: Optional[int] = None,
+                 index: Optional[int] = None,
+                 tap: Optional[bool] = None,
+                 duration: Optional[float] = None,
+                 taps: Optional[int] = None,
+                 debug: Optional[bool] = None) -> CVResult:
+        """用系统内置分类器识别画面内容（无需联网）
+
+        Returns:
+            CVResult，每个标签是 ``vision_type == "label"`` 的一条，
+            ``info["identifier"]`` 为类别名（如 "dog" / "food"…）
+        """
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        data = self._common(index=index, tap=tap, duration=duration,
+                            taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        data.update(_clean({"maxResults": max_results}))
+        return self._post("/wda/vision/classify", data)
+
+    def contours(self,
+                 image: Optional[Union[str, bytes, Any]] = None,
+                 contrast: Optional[float] = None,
+                 max_dimension: Optional[int] = None,
+                 index: Optional[int] = None,
+                 tap: Optional[bool] = None,
+                 duration: Optional[float] = None,
+                 taps: Optional[int] = None,
+                 debug: Optional[bool] = None) -> CVResult:
+        """检测画面中的显著轮廓（Vision 实现，OpenCV 版见 :meth:`edges`）
+
+        Args:
+            image: 传了就分析这张图，否则实时截屏
+            contrast: 查找前的对比度增强 0..3，默认 1.0
+            max_dimension: 查找前把图缩到该边长（像素），提速；缺省不缩放
+        """
+        if contrast is not None and not 0.0 <= float(contrast) <= 3.0:
+            raise ValueError("contrast must be in 0..3, got %r" % contrast)
+        if max_dimension is not None and int(max_dimension) <= 0:
+            raise ValueError("max_dimension must be > 0, got %r" % max_dimension)
+        data = self._common(index=index, tap=tap, duration=duration,
+                            taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        data.update(_clean({"contrast": contrast, "maxDimension": max_dimension}))
+        return self._post("/wda/vision/contours", data)
+
+    def document(self,
+                 image: Optional[Union[str, bytes, Any]] = None,
+                 index: Optional[int] = None,
+                 tap: Optional[bool] = None,
+                 duration: Optional[float] = None,
+                 taps: Optional[int] = None,
+                 debug: Optional[bool] = None) -> CVResult:
+        """检测画面里的文档 / 卡片（四边形物体）
+
+        Returns:
+            CVResult，命中项 ``vision_type == "document"``，
+            ``info["corners"]`` 为四个角点像素坐标
+        """
+        data = self._common(index=index, tap=tap, duration=duration,
+                            taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        return self._post("/wda/vision/document", data)
+
+    def text_rectangles(self,
+                        image: Optional[Union[str, bytes, Any]] = None,
+                        char_boxes: Optional[bool] = None,
+                        max_results: Optional[int] = None,
+                        region: Optional[Union[dict, Sequence]] = None,
+                        index: Optional[int] = None,
+                        tap: Optional[bool] = None,
+                        duration: Optional[float] = None,
+                        taps: Optional[int] = None,
+                        debug: Optional[bool] = None) -> CVResult:
+        """只定位文字区域而不做识别（比 :meth:`ocr` 快得多）
+
+        适合先找"哪里有字"，再对命中区域单独做 :meth:`ocr`。
+
+        Args:
+            image: 传了就分析这张图，否则实时截屏
+            char_boxes: 是否收集逐字框（放慢）
+            max_results: 最多返回几个，默认 20
+            region: 只在该像素区域内找
+        """
+        if max_results is not None and int(max_results) < 1:
+            raise ValueError("max_results must be >= 1, got %r" % max_results)
+        data = self._common(region=region, index=index, tap=tap,
+                            duration=duration, taps=taps, debug=debug)
+        data.update(self._image_arg(image))
+        data.update(_clean({"charBoxes": char_boxes, "maxResults": max_results}))
+        return self._post("/wda/vision/textRectangles", data)
+
+    def align(self,
+              reference: Union[str, bytes, Any],
+              image: Optional[Union[str, bytes, Any]] = None) -> CVAlignResult:
+        """把当前画面与参考图对齐，返回仿射变换（检测屏幕位移/抖动）
+
+        常用于比对两张截图前先校正滚动/动画造成的整体偏移。
+
+        Args:
+            reference: 参考图（必填，任意 :func:`_to_base64` 接受的形式）
+            image: 待对齐图；缺省实时截屏
+
+        Returns:
+            CVAlignResult，``transform`` 为 [a, b, c, d, tx, ty] 六元仿射
+            矩阵，tx / ty 近似为像素平移量
+        """
+        data = {"reference": _to_base64(reference)}
+        data.update(self._image_arg(image))
+        value = self._post_raw("/wda/vision/align", data)
+        return CVAlignResult(value)
 
     # ------------------------------------------------------------------ #
     # 便捷方法

@@ -94,3 +94,31 @@ class WDAStaleElementReferenceError(WDARequestError):
     @staticmethod
     def check(v: dict):
         return v.get("error") == 'stale element reference'
+
+
+# --------------------------------------------------------------------------- #
+# 设备激活（lockdown / mobileactivationd）相关
+# --------------------------------------------------------------------------- #
+
+class DeviceNotFoundError(WDAError):
+    """ usbmux 上找不到指定的 USB 设备（未插线 / 未信任 / 只连着 Wi-Fi 设备） """
+
+
+class LockdownError(WDAError):
+    """ 与设备 lockdown 服务通信失败 """
+
+
+class DeviceNotPairedError(LockdownError):
+    """ 本机没有该设备的配对记录：先在设备上点「信任此电脑」 """
+
+
+class ServiceStartError(LockdownError):
+    """ lockdown 拒绝启动某个服务（未挂载开发者镜像、服务不存在等） """
+
+
+class ActivationError(WDAError):
+    """ 设备激活流程失败 """
+
+
+class ActivationServerError(ActivationError):
+    """ Apple 激活服务器（albert.apple.com）返回错误 """

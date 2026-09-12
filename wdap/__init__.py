@@ -4,20 +4,23 @@
 from __future__ import print_function, unicode_literals
 
 #: 与 pyproject.toml 中的 version 保持一致
-__version__ = "0.2.1"
+__version__ = "0.2.5"
 
 
 import base64
 import contextlib
 import enum
 import functools
+import http.client
 import io
 import json
 import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
+import tempfile
 import threading
 import time
 from collections import defaultdict, namedtuple
@@ -31,10 +34,32 @@ from deprecated import deprecated
 from wdap import xcui_element_types
 from wdap._proto import *
 from wdap.cv import CV, CVResult, CVMatch, CVStatus
+from wdap.log import (Log, LogCategory, LogConfig, LogCrashReport, LogEntry,
+                      LogLevel, LogSnapshot, LogStats, LogUnsupportedError)
 from wdap.exceptions import *
-from wdap.usbmux import fetch
+from wdap.usbmux import UsbmuxPortForwarder, close_pool, fetch
+from wdap.usbmux.exceptions import HTTPError as MuxHTTPError
+from wdap.usbmux.exceptions import MuxConnectError as MuxRelayRefusedError
+from wdap.usbmux.exceptions import MuxConnectToUsbmuxdError
+from wdap.usbmux.exceptions import MuxError as MuxTransportError
+# wdap.exceptions 里遗留着一份**同名但运行时从不抛出**的 MuxError / MuxConnectError
+# （上面 `from wdap.exceptions import *` 带进来的）。它会造成
+# `except wdap.MuxConnectError` 永远抓不到真实异常这种坑，这里显式覆盖成真正会抛的那份。
+from wdap.usbmux.exceptions import MuxConnectError, MuxError  # noqa: F401
 from wdap.usbmux.pyusbmux import list_devices, select_device
 from wdap.utils import inject_call, limit_call_depth, AttrDict, convert
+# 设备激活（仅 USB）：对标 go-ios 的 `ios activate`，走 lockdown + mobileactivationd
+from wdap.activation import (ActivationResult, activate_all_usb_devices,
+                             activate_device, activation_state,
+                             is_device_activated)
+# 拉起 WDA（注意与上面的"设备激活"是两回事）：iOS<=16 tidevice / iOS>=17 go-ios
+from wdap.wda_launch import (ALL_STRATEGIES as ALL_WDA_STRATEGIES,
+                             ALL_TUNNEL_MODES, WdaLaunchResult, ensure_tunnel,
+                             mount_developer_image, parse_ios_version,
+                             pick_backend, read_ios_version, start_wda,
+                             tunnel_agent_alive)
+from wdap.lockdown import (LOCKDOWN_PORT, LockdownClient, PairRecord,
+                           list_usb_devices, load_pair_record)
 
 try:
     from functools import cached_property  # Python3.8+
@@ -56,6 +81,22 @@ except ImportError:
 DEBUG = False
 HTTP_TIMEOUT = 180.0  # unit second
 DEVICE_WAIT_TIMEOUT = 180.0  # wait ready
+
+# --------------------------------------------------------------------------- #
+# 传输层瞬态错误自动恢复（连接被重置 / 中断 / 对端提前关闭）
+#
+# 背景：每次 HTTP 请求都会新建一条连接（http+usbmux 下是一条 usbmux 隧道）。
+# 长跑时若隧道持续累积，设备端 HTTP 服务或 usbmuxd 达到并发上限后会把新连接 RST 掉，
+# 表现为 WinError 10054 "远程主机强迫关闭了一个现有的连接"。
+# 关闭泄漏已由 usbmux.fetch 的 finally 保证，这里再补一层"这类错误可自愈"。
+# --------------------------------------------------------------------------- #
+#: 传输层错误的总尝试次数（1 = 不重试；2 = 失败后重试 1 次）
+HTTP_TRANSPORT_TRIES = 2
+#: 两次尝试之间的基础间隔（秒），实际按 0.5s、1.0s... 递增
+HTTP_TRANSPORT_RETRY_DELAY = 0.5
+#: 默认只对幂等方法重试。POST 在 WDA 里多为点击/输入/滑动等动作，重复执行有副作用；
+#: 若确认自己的 POST 都是查询类（如 findElement），可置为 True
+HTTP_TRANSPORT_RETRY_ON_POST = False
 
 LANDSCAPE = 'LANDSCAPE'
 PORTRAIT = 'PORTRAIT'
@@ -120,6 +161,150 @@ def httpdo(url, method="GET", data=None, timeout=None) -> AttrDict:
         return _unsafe_httpdo(url, method, data, timeout)
 
 
+#: 认定为"传输层"的异常类型（区别于 WDA 返回的业务错误，后者不该重试）
+_TRANSPORT_ERRORS = (
+    ConnectionResetError,            # WinError 10054 / ECONNRESET
+    ConnectionAbortedError,
+    BrokenPipeError,
+    TimeoutError,                    # Python 3.10+ 起 socket.timeout 即 TimeoutError
+    socket.timeout,
+    http.client.RemoteDisconnected,  # 对端在响应前就关闭
+    http.client.BadStatusLine,
+    http.client.ResponseNotReady,
+)
+
+#: 幂等方法，重试不会产生副作用
+_TRANSPORT_SAFE_METHODS = ("GET", "HEAD", "OPTIONS", "DELETE")
+
+
+def _unwrap_transport_error(err: BaseException) -> BaseException:
+    """usbmux 用 ``raise HTTPError(e)`` 把底层异常塞进 args[0]，这里剥出真实原因"""
+    for _ in range(5):
+        if not isinstance(err, MuxHTTPError) or not err.args:
+            break
+        inner = err.args[0]
+        if not isinstance(inner, BaseException):
+            break
+        err = inner
+    return err
+
+
+def _is_transport_error(err: BaseException) -> bool:
+    """是否为可安全重试的传输层瞬态错误"""
+    return isinstance(_unwrap_transport_error(err), _TRANSPORT_ERRORS)
+
+
+def _explain_probe_error(err: BaseException) -> str:
+    """
+    把"探测 WDA 是否就绪"失败的原因翻译成人能看懂的提示。
+
+    ``is_ready()`` 吞异常的设计会让人误以为"WDA 没启动"，实际可能是设备没插、
+    usbmuxd 没跑、端口不对或是隧道被重置。这里把这几类区分开。
+    """
+    inner = _unwrap_transport_error(err)
+    if isinstance(inner, MuxConnectToUsbmuxdError):
+        return ("连不上 usbmuxd（Windows 需 Apple Mobile Device Service 监听 127.0.0.1:27015；"
+                "macOS/Linux 为 /var/run/usbmuxd）")
+    if isinstance(inner, MuxRelayRefusedError):
+        return "usbmuxd 拒绝中继到设备端口：设备上 8100 没有服务在监听（WDA 未真正启动，或端口不是 8100）"
+    if isinstance(inner, AttributeError):
+        return "usbmuxd 没有枚举到该设备（已拔出 / 未点信任 / 仅网络连接）"
+    if isinstance(inner, _TRANSPORT_ERRORS):
+        return ("usbmux 隧道被重置/中止（{}）。常见诱因：设备上该端口没有服务在监听、"
+                "usbmuxd 通道被其它工具（tidevice/iTunes/爱思助手）争用、或 USB 连接不稳"
+                "（重新插拔 / 换线 / 换口可验证）").format(inner)
+    if isinstance(inner, MuxTransportError):
+        return "usbmux 通道异常"
+    return "{}: {}".format(type(inner).__name__, inner)
+
+
+def _control_channel_alive(udid: str = "") -> bool:
+    """
+    usbmuxd 的**控制通道**是否仍然正常（还能枚举到设备）。
+
+    隧道被 RST 时靠它区分两种性质完全不同的故障：
+
+    * 控制通道正常 → usbmuxd 活着、设备在，只是"设备上那个端口"连不上（WDA 没起来），
+      这时去激活 WDA 是有意义的；
+    * 控制通道也不通 → usbmux 通道本身坏了（usbmuxd 异常 / 设备失联 / 被别的工具独占），
+      启动 WDA 纯属徒劳。
+    """
+    try:
+        devices = list_devices()
+    except Exception:  # noqa: BLE001 - 这里就是要用一个探针判断通道是否可用
+        return False
+    if not udid:
+        return bool(devices)
+    return any(dev.matches_udid(udid) for dev in devices)
+
+
+def _probe_error_is_device_channel(err: BaseException, udid: str = "") -> bool:
+    """
+    探测失败是否发生在"设备/usbmuxd 通道"这一层。
+
+    这一层坏了，再启动 WDA 也没用（tidevice 同样连不上），应直接报错而不是徒劳激活。
+    注意：relay 被明确拒绝（usbmuxd 回 CONNREFUSED，即设备在线但该端口无监听）
+    恰恰说明"WDA 真没起来"，属于值得激活的情况。
+
+    ``udid`` 用于在"隧道被 RST"这种模糊场景下探一次控制通道来自证是哪一侧的问题。
+    """
+    inner = _unwrap_transport_error(err)
+    if isinstance(inner, MuxConnectToUsbmuxdError):
+        # 连 usbmuxd 都失败（注意它是 MuxConnectError 的子类，必须排在前面判断）
+        return True
+    if isinstance(inner, MuxRelayRefusedError):
+        # usbmuxd 明确拒绝中继 → 设备在线、端口没人听 → 值得去激活
+        return False
+    if isinstance(inner, AttributeError):
+        # select_device 返回 None，设备没被枚举到
+        return True
+    if isinstance(inner, _TRANSPORT_ERRORS):
+        # 隧道被 RST/中止/超时。两种可能：设备端口没开（可激活），或通道坏了（激活无用）。
+        # 判据：控制通道还活着吗？活着说明通道没问题，问题在设备端口。
+        return not _control_channel_alive(udid)
+    return isinstance(inner, MuxTransportError)
+
+
+def _tail_file(path: str, limit: int = 400) -> str:
+    """读文件尾部若干字符，用于把子进程失败原因带进日志"""
+    try:
+        with open(path, "rb") as fp:
+            data = fp.read()
+    except OSError:
+        return ""
+    text = data.decode("utf-8", "replace").strip()
+    if len(text) > limit:
+        text = "..." + text[-limit:]
+    return text
+
+
+def _fetch_with_retry(url: str, method: str, data, timeout):
+    """
+    发一次 HTTP 请求；遇到传输层瞬态错误时丢弃旧连接、重建后重试。
+
+    fetch() 每次都新建连接（并在 finally 里关闭），所以重试天然走一条全新的
+    usbmux 隧道，这正是 RST 场景需要的恢复手段。
+    """
+    method_upper = (method or "GET").upper()
+    retryable = (HTTP_TRANSPORT_RETRY_ON_POST
+                 or method_upper in _TRANSPORT_SAFE_METHODS)
+    tries = max(1, int(HTTP_TRANSPORT_TRIES)) if retryable else 1
+
+    last_err = None
+    for index in range(tries):
+        try:
+            return fetch(url, method, data, timeout)
+        except Exception as err:
+            if not _is_transport_error(err) or index == tries - 1:
+                raise
+            last_err = err
+            delay = HTTP_TRANSPORT_RETRY_DELAY * (index + 1)
+            logger.debug("transport error on %s %s (%s), retry %d/%d after %.1fs",
+                         method_upper, url, err, index + 1, tries - 1, delay)
+            time.sleep(delay)
+    raise last_err  # pragma: no cover
+
+
 def _unsafe_httpdo(url: str, method='GET', data=None, timeout=None):
     """
     Do HTTP Request
@@ -132,7 +317,7 @@ def _unsafe_httpdo(url: str, method='GET', data=None, timeout=None):
 
     if timeout is None:
         timeout = HTTP_TIMEOUT
-    response = fetch(url, method, data, timeout)
+    response = _fetch_with_retry(url, method, data, timeout)
     if response.status_code == 502:  # Bad Gateway
         raise WDABadGateway(response.status_code, response.text)
     if DEBUG:
@@ -206,23 +391,32 @@ class Rect(list):
         return self.y + self.height
 
 
-def _start_wda_xctest(udid: str, wda_bundle_id=None) -> bool:
-    xctool_path = shutil.which("tins2") or shutil.which("tidevice")
-    if not xctool_path:
-        return False
-    logger.info("WDA is not running, exec: {} xctest".format(xctool_path))
-    args = []
-    if udid:
-        args.extend(['-u', udid])
-    args.append('xctest')
-    if wda_bundle_id:
-        args.extend(['-B', wda_bundle_id])
-    p = subprocess.Popen([xctool_path] + args)
-    time.sleep(3)
-    if p.poll() is not None:
-        logger.warning("xctest launch failed")
-        return False
-    return True
+def _start_wda_xctest(udid: str,
+                      wda_bundle_id=None,
+                      strategy: str = "auto",
+                      wda_port=None,
+                      fallback: bool = True,
+                      tidevice_path=None,
+                      goios_path=None,
+                      startup_wait: float = 3.0) -> bool:
+    """按 iOS 版本选择后端拉起 WDA（保留的薄封装，只返回成功与否）
+
+    真正的实现在 ``wdap.wda_launch.start_wda``，返回值里带有后端名、
+    iOS 版本、命令行和日志路径，排查时用它更好。
+
+    Note:
+        iOS 17+ 的 testmanagerd 换成了 RemoteXPC，tidevice 会在挂载开发者
+        镜像阶段失败（DeveloperImage not found），所以 iOS 17+ 必须走
+        ``go-ios runwda``。``strategy="auto"`` 会读 ``ProductVersion`` 自动选。
+    """
+    return start_wda(udid,
+                     wda_bundle_id=wda_bundle_id,
+                     strategy=strategy,
+                     wda_port=wda_port,
+                     fallback=fallback,
+                     tidevice_path=tidevice_path,
+                     goios_path=goios_path,
+                     startup_wait=startup_wait).ok
 
 
 class BaseClient(object):
@@ -282,12 +476,47 @@ class BaseClient(object):
         self.register_callback(
             Callback.HTTP_REQUEST_BEFORE, self._callback_json_report)
 
-    def is_ready(self) -> bool:
+    def probe(self, timeout: float = 3.0):
+        """
+        探测 WDA 是否就绪，**并把失败原因带回来**（``is_ready`` 会把原因吞掉）。
+
+        Returns:
+            (bool, object): 成功 ``(True, status_value)``；失败 ``(False, exception)``
+
+        Example:
+            ok, info = c.probe()
+            if not ok:
+                print("WDA 不可用:", info)
+        """
         try:
-            self.http.get("status", timeout=3)
-            return True
-        except Exception as e:
-            return False
+            return True, self.http.get("status", timeout=timeout)
+        except Exception as err:  # noqa: BLE001 - 探测就是要拿到任意原因
+            return False, err
+
+    def is_ready(self, timeout: float = 3.0, tries: int = 1, delay: float = 0.3) -> bool:
+        """
+        探测 WDA 是否就绪。
+
+        Args:
+            timeout: 单次请求超时（秒）。http+usbmux 首次请求要先建隧道，
+                设得太短会把"建连慢"误判成"WDA 没启动"。
+            tries: 尝试次数。>1 时对瞬态失败自动重试，避免一次网络抖动被误判。
+            delay: 重试间隔（秒）。
+
+        Note:
+            只返回 True/False。需要知道**为什么**不可用时请用 :meth:`probe`。
+        """
+        tries = max(1, int(tries))
+        for index in range(tries):
+            try:
+                self.http.get("status", timeout=timeout)
+                return True
+            except Exception as err:  # noqa: BLE001
+                if index == tries - 1:
+                    logger.debug("probe %r failed: %s", self.__wda_url, err)
+                    return False
+                time.sleep(delay)
+        return False  # pragma: no cover
 
     def wait_ready(self, timeout=120, noprint=False) -> bool:
         """
@@ -304,14 +533,18 @@ class BaseClient(object):
             print("facebook-wdap", time.ctime(), message)
 
         _dprint("Wait ready (timeout={:.1f})".format(timeout))
+        last_err = None
         while time.time() < deadline:
-            if self.is_ready():
+            ok, info = self.probe()
+            if ok:
                 _dprint("device back online")
                 return True
-            else:
-                _dprint("{!r} wait_ready left {:.1f} seconds".format(self.__wda_url, deadline - time.time()))
-                time.sleep(1.0)
-        _dprint("device still offline")
+            last_err = info
+            _dprint("{!r} wait_ready left {:.1f} seconds".format(self.__wda_url, deadline - time.time()))
+            time.sleep(1.0)
+        # 把最后一次失败原因打出来：否则"device still offline"完全无法定位
+        _dprint("device still offline: {}".format(_explain_probe_error(last_err)
+                                                  if last_err else "unknown"))
         return False
 
     @retry.retry(exceptions=WDAEmptyResponseError, tries=3, delay=2)
@@ -417,6 +650,26 @@ class BaseClient(object):
             functools.partial(self._fetch, "GET", with_session=True),
             functools.partial(self._fetch, "POST", with_session=True),
             functools.partial(self._fetch, "DELETE", with_session=True))  # yapf: disable
+
+    @property
+    def wda_url(self) -> str:
+        """当前连接的 WDA 基址，如 ``http+usbmux://<udid>:8100``"""
+        return self.__wda_url
+
+    def _fetch_raw(self,
+                   method: str,
+                   urlpath: str,
+                   data: Optional[dict] = None,
+                   timeout: Optional[float] = None):
+        """取回**原始响应**，不做 WDA 的 JSON 信封解析
+
+        :meth:`_fetch` 总是 ``response.json()``，而少数端点（如
+        ``/wda/log/download``）返回的是 ``text/plain``，走通用通道会被当成
+        JSON 解析失败。这里直接返回带 ``.text`` / ``.status_code`` 的响应包装。
+        """
+        urlpath = "/" + urlpath.lstrip("/")  # urlpath always startswith /
+        url = urljoin(self.__wda_url, urlpath)
+        return _fetch_with_retry(url, method, data, timeout)
 
     def home(self):
         """Press home button"""
@@ -1887,6 +2140,26 @@ class Client(BaseClient):
         """
         return CV(self)
 
+    @cached_property
+    def log(self) -> Log:
+        """
+        WDA 运行日志（/wda/log/*），需要 WDA 带运行日志支持
+
+        这些路由是 session-less + standalone 的——即使 session 没建起来、
+        路由队列卡死也能问到，专门用来回答"端口还在但没反应"。
+
+        Example::
+
+            c.log.stats().http["requests"]        # 计数器总览
+            c.log.recent(limit=50, level="warn")  # 最近 50 条 warn 以上
+            c.log.crash().report                  # 上次崩溃报告
+            c.log.save("wda.log")                 # 纯文本落盘
+
+        Returns:
+            wdap.log.Log
+        """
+        return Log(self)
+
 
 Session = Client  # for compability
 
@@ -2570,9 +2843,65 @@ class Element(object):
 
 
 class USBClient(Client):
-    """ connect device through unix:/var/run/usbmuxd """
+    """通过 USB（usbmux）连接设备上的 WDA。
 
-    def __init__(self, udid: str = "", port: int = 8100, wda_bundle_id=None):
+    传输方式由 ``transport`` 决定：
+
+    * ``"forward"`` —— **在库内起一个本地转发**（``wdap.usbmux.UsbmuxPortForwarder``），
+      把 ``设备:port`` 映射为 ``http://127.0.0.1:<随机端口>``。HTTP 走标准 socket，
+      keep-alive 正常复用，隧道按需建立、用完即关；没有额外依赖。
+    * ``"usbmux"`` —— 旧行为，URL 直接用 ``http+usbmux://...``。每条 HTTP 请求都会
+      重新 ``select_device()`` + 建一条 usbmux 隧道（各开 2 条 usbmuxd 连接），高频调用
+      会把 usbmuxd 连接数推高到上限，之后新隧道被 RST（``WinError 10054``）。
+    * ``"auto"`` —— 默认。优先 ``forward``，本机转发起不来时回退 ``usbmux``。
+    """
+
+    def __init__(self,
+                 udid: str = "",
+                 port: int = 8100,
+                 wda_bundle_id=None,
+                 auto_activate: bool = True,
+                 activate_timeout: float = 20.0,
+                 probe_tries: int = 3,
+                 probe_timeout: float = 5.0,
+                 transport: str = "auto",
+                 wda_backend: str = "auto",
+                 fallback: bool = True,
+                 tidevice_path=None,
+                  goios_path=None,
+                  mount_image: bool = False,
+                  start_tunnel: bool = True,
+                  tunnel_mode: str = "auto"):
+        """
+        Args:
+            udid: 设备 UDID；留空时自动选择唯一一台 USB 设备
+            port: 设备上 WDA 监听的端口，默认 8100
+            wda_bundle_id: 传给 tidevice / go-ios 的 WDA bundle id
+            auto_activate: 探测不到 WDA 时是否自动拉起它。
+                WDA 由外部工具托管时请设 False，避免无谓的尝试。
+            activate_timeout: 触发拉起后，等待 WDA 就绪的秒数
+            probe_tries: 首次探测的重试次数。首次请求要先建隧道/转发，
+                单次探测容易把建连慢/瞬时 RST 误判成"WDA 没启动"。
+            probe_timeout: 单次探测的 HTTP 超时（秒）
+            transport: ``auto`` / ``forward`` / ``usbmux``，见类文档
+            wda_backend: 拉起 WDA 的后端 —— ``auto``（默认，按 iOS 版本选）/
+                ``tidevice``（iOS 16 及以下）/ ``goios``（iOS 17 及以上）。
+                iOS 17+ 的 testmanagerd 换成了 RemoteXPC，tidevice 拉不起来。
+            fallback: 首选后端拉不起来时，是否换另一个后端再试一次
+            tidevice_path: tidevice / tins2 的可执行文件路径，省略则查 PATH
+            goios_path: go-ios（``ios``）的可执行文件路径，省略则查 PATH
+            mount_image: 拉起前先跑 ``ios image auto`` 挂载开发者镜像。
+                仅 go-ios 后端需要；tidevice 会自己挂载，无需开启。
+            start_tunnel: 拉起前先确保 go-ios tunnel daemon 在跑。
+                **iOS 17+ 的硬前置条件** —— go-ios 的 ``runwda`` 不会自己起隧道，
+                没有隧道会在连接 testmanagerd（RemoteXPC）时失败。
+                已在别处手动跑过 ``ios tunnel start`` 时可设 False。
+            tunnel_mode: ``kernel``（Linux/macOS 通常要 sudo、Windows 要管理员）
+                / ``userspace``（Windows 需把 wintun.dll 放到 C:/Windows/system32）
+        """
+        if wda_backend not in ALL_WDA_STRATEGIES:
+            raise ValueError("wda_backend 只能是 %s，收到 %r"
+                             % ("/".join(ALL_WDA_STRATEGIES), wda_backend))
         if not udid:
             infos = [info for info in list_devices() if info.connection_type == 'USB']
             if len(infos) == 0:
@@ -2581,10 +2910,116 @@ class USBClient(Client):
                 raise RuntimeError("more then one device connected")
             udid = infos[0].serial
 
-        super().__init__(url=f"http+usbmux://{udid}:{port}")
-        if self.is_ready():
+        if transport not in ("auto", "forward", "usbmux"):
+            raise ValueError("transport 只能是 auto / forward / usbmux，收到 %r" % (transport,))
+
+        self.udid = udid
+        self.port = int(port)
+        self.transport = transport
+        self._forwarder = None
+        #: 上一次拉起 WDA 的结果（WdaLaunchResult），没触发拉起时为 None
+        self.last_launch = None
+
+        url = f"http+usbmux://{udid}:{port}"
+        if transport in ("auto", "forward"):
+            forwarder = UsbmuxPortForwarder(udid=udid, remote_port=self.port,
+                                            logger=logger.debug)
+            try:
+                forwarder.start()
+            except Exception as err:  # noqa: BLE001
+                if transport == "forward":
+                    raise RuntimeError("本机转发启动失败：{}".format(err)) from err
+                logger.debug("local forward 不可用（%r），回退 http+usbmux", err)
+            else:
+                self._forwarder = forwarder
+                url = forwarder.url
+                logger.debug("USB transport = local forward: %s -> %s:%d",
+                             url, udid, self.port)
+
+        self._transport_url = url
+        super().__init__(url=url)
+
+        if self.is_ready(timeout=probe_timeout, tries=probe_tries):
             return
 
-        _start_wda_xctest(udid, wda_bundle_id)
-        if not self.wait_ready(timeout=20):
-            raise RuntimeError("wdap xctest launched but check failed")
+        # 探不通 —— 但"探不通"≠"WDA 没启动"，先把真实原因拿到手
+        _, err = self.probe(timeout=probe_timeout)
+        # 本机转发模式下，真正的失败点在"开隧道"这一步，比上层的连接被关闭更精确
+        tunnel_err = getattr(self._forwarder, "last_tunnel_error", None)
+        channel_err = tunnel_err if tunnel_err is not None else err
+        reason = _explain_probe_error(err)
+        if tunnel_err is not None:
+            tunnel_reason = _explain_probe_error(tunnel_err)
+            if tunnel_reason != reason:
+                reason = "{}；隧道层: {}".format(reason, tunnel_reason)
+        logger.warning("WDA not ready at %s: %s", url, reason)
+
+        if not auto_activate:
+            raise RuntimeError(
+                "WDA not ready at {} ({}). auto_activate=False，"
+                "请先自行启动 WDA（如 go-ios runwda）后再连接。".format(url, reason))
+
+        if _probe_error_is_device_channel(channel_err, udid):
+            raise RuntimeError(
+                "无法激活 WDA：{}（{}）。usbmuxd 控制通道本身不可用（连设备都枚举不到或"
+                "usbmuxd 无响应），启动 WDA 也救不了。请先确认：Apple Mobile Device Service "
+                "在运行、USB 已连接并点了『信任』、没有别的工具独占设备。\n"
+                "也可以绕开 USB/usbmux 通道：\n"
+                "  · WiFi 直连：Client('http://<设备IP>:8100')\n"
+                "  · go-ios 转发：ios forward 8100 8100 之后 Client('http://127.0.0.1:8100')\n"
+                "  再用 USBClient(auto_activate=False) 或 Client(...) 连接。".format(url, reason))
+
+        # 挂镜像 / 起隧道都在 start_wda 内部按后端处理：
+        # 只有 go-ios 后端需要（tidevice 会在 xctest 内部自己挂镜像）
+        launch = start_wda(udid,
+                           wda_bundle_id=wda_bundle_id,
+                           strategy=wda_backend,
+                           wda_port=self.port,
+                           fallback=fallback,
+                           tidevice_path=tidevice_path,
+                           goios_path=goios_path,
+                           mount_image=mount_image,
+                           start_tunnel=start_tunnel,
+                           tunnel_mode=tunnel_mode)
+        self.last_launch = launch
+        if launch.ok and self.wait_ready(timeout=activate_timeout):
+            return
+
+        launch_detail = launch.detail
+        if not launch.command:
+            # command 为空 = 连可执行文件都没找到，压根没执行
+            launch_detail += (
+                "\n未找到可用的拉起工具：iOS 16 及以下需要 tidevice/tins2，"
+                "iOS 17 及以上需要 go-ios(ios)，请把对应可执行文件放进 PATH，"
+                "或用 tidevice_path= / goios_path= 显式指定。")
+
+        raise RuntimeError(
+            "WDA 拉起失败 at {}（探测原因：{}）。\n"
+            "后端={} iOS版本={} 命令={}\n{}\n"
+            "排障：iOS 17+ 只能用 go-ios（tidevice 会报 DeveloperImage not found）；"
+            "go-ios 跑 WDA 需要两个前置条件 —— 挂载开发者镜像"
+            "（ios image auto --udid=<udid>）、启动隧道 daemon"
+            "（ios tunnel start，kernel 模式要管理员/sudo；Windows 可选 "
+            "ios tunnel start --userspace，需 wintun.dll 在 C:/Windows/system32）。"
+            "也可以先手工拉起 WDA 再用 "
+            "USBClient(auto_activate=False) 连接。".format(
+                url, reason, launch.backend or "(无)",
+                launch.ios_version or "未知",
+                " ".join(launch.command) or "(未执行)", launch_detail))
+
+    def disconnect(self):
+        """释放本 client 占用的传输资源（本地转发端口 + 复用的 HTTP 连接）。
+
+        幂等；调用后仍需继续使用请重新构造 client。
+        """
+        forwarder, self._forwarder = self._forwarder, None
+        if forwarder is not None:
+            forwarder.stop()
+            logger.debug("USB local forward stopped (%s)", self._transport_url)
+        close_pool(getattr(self, "_transport_url", None))
+
+    def __del__(self):
+        try:
+            self.disconnect()
+        except Exception:  # noqa: BLE001
+            pass

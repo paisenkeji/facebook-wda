@@ -94,3 +94,6 @@ xcuserdata/
 
 # IDE
 .idea/
+
+# WorkBuddy 本地工作数据（含会话记忆，禁止入库）
+.workbuddy/
